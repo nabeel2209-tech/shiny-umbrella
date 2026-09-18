@@ -9,6 +9,7 @@ Rules enforced here (see project constraints):
 
 from __future__ import annotations
 
+import time
 import uuid
 from datetime import datetime
 from enum import StrEnum
@@ -43,6 +44,15 @@ ISTDatetime = Annotated[AwareDatetime, AfterValidator(to_ist)]
 
 def new_id() -> str:
     return str(uuid.uuid4())
+
+
+# Broker order tags (Dhan correlationId) allow at most 30 chars of [A-Za-z0-9 _-].
+TAG_PATTERN = r"^[A-Za-z0-9 _-]{1,30}$"
+
+
+def new_tag() -> str:
+    """27-char idempotency tag: 11 hex chars of epoch-ms (sortable) + 16 random hex chars."""
+    return f"{int(time.time() * 1000):011x}{uuid.uuid4().hex[:16]}"
 
 
 # --------------------------------------------------------------------------- enums
@@ -313,7 +323,8 @@ class OrderRequest(BaseModel):
     price: float | None = Field(default=None, gt=0)
     trigger_price: float | None = Field(default=None, gt=0)
     validity: Validity = Validity.DAY
-    tag: str = Field(default_factory=new_id)  # our idempotency key, sent to the broker
+    # our idempotency key, sent to the broker as its tag / correlation id
+    tag: str = Field(default_factory=new_tag, pattern=TAG_PATTERN, max_length=30)
     disclosed_qty: int = Field(default=0, ge=0)
 
     @model_validator(mode="after")
@@ -388,10 +399,11 @@ class Fill(BaseModel):
     ts: ISTDatetime
     product: ProductType
     fees: FeeBreakdown = Field(default_factory=FeeBreakdown)
+    multiplier: float = Field(default=1.0, gt=0)  # contract multiplier (MCX lots)
 
     @property
     def value(self) -> float:
-        return self.qty * self.price
+        return self.qty * self.price * self.multiplier
 
 
 class Position(BaseModel):
@@ -403,17 +415,18 @@ class Position(BaseModel):
 
     symbol: str
     product: ProductType
-    qty: int = 0  # signed: +long / -short
+    qty: int = 0  # signed: +long / -short (lots for MCX)
     avg_price: float = 0.0
     realised_pnl: float = 0.0
     fees_paid: float = 0.0
     last_price: float | None = None
+    multiplier: float = Field(default=1.0, gt=0)  # PnL per unit price move per unit qty
 
     @property
     def unrealised_pnl(self) -> float:
         if self.qty == 0 or self.last_price is None:
             return 0.0
-        return (self.last_price - self.avg_price) * self.qty
+        return (self.last_price - self.avg_price) * self.qty * self.multiplier
 
     @property
     def net_pnl(self) -> float:
@@ -422,7 +435,7 @@ class Position(BaseModel):
     @property
     def market_value(self) -> float:
         price = self.last_price if self.last_price is not None else self.avg_price
-        return self.qty * price
+        return self.qty * price * self.multiplier
 
     @property
     def side(self) -> Side | None:

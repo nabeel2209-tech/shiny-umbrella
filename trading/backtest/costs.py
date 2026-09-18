@@ -130,10 +130,12 @@ def compute_fees(
     product: ProductType,
     *,
     schedule: FeeSchedule = DEFAULT_FEES,
+    multiplier: float = 1.0,
 ) -> FeeBreakdown:
-    """Fees for one fill of ``qty`` units at ``price``."""
+    """Fees for one fill of ``qty`` units at ``price``. ``multiplier`` converts
+    quantity (lots) into contract value for MCX."""
     seg = schedule.for_segment(segment_for(symbol, product))
-    value = qty * price
+    value = qty * price * multiplier
     brokerage = value * seg.brokerage_pct
     if seg.brokerage_cap is not None:
         brokerage = min(brokerage, seg.brokerage_cap)
@@ -161,10 +163,12 @@ def round_trip_fees(
     product: ProductType,
     *,
     schedule: FeeSchedule = DEFAULT_FEES,
+    multiplier: float = 1.0,
 ) -> FeeBreakdown:
     """Buy + sell of ``qty`` at the same price."""
-    return compute_fees(symbol, Side.BUY, qty, price, product, schedule=schedule) + compute_fees(
-        symbol, Side.SELL, qty, price, product, schedule=schedule
+    kw = {"schedule": schedule, "multiplier": multiplier}
+    return compute_fees(symbol, Side.BUY, qty, price, product, **kw) + compute_fees(
+        symbol, Side.SELL, qty, price, product, **kw
     )
 
 
@@ -176,12 +180,15 @@ def round_trip_cost_bps(
     *,
     slippage_bps: float = 0.0,
     schedule: FeeSchedule = DEFAULT_FEES,
+    multiplier: float = 1.0,
 ) -> float:
     """Round-trip cost as basis points of one-way trade value, incl. an optional
     slippage assumption applied on both legs. This is the hurdle an expected edge
     must clear (risk agent cost threshold)."""
-    value = qty * price
+    value = qty * price * multiplier
     if value <= 0:
         raise ValueError("trade value must be positive")
-    fees = round_trip_fees(symbol, qty, price, product, schedule=schedule).total
+    fees = round_trip_fees(
+        symbol, qty, price, product, schedule=schedule, multiplier=multiplier
+    ).total
     return fees / value * 10_000 + 2 * slippage_bps

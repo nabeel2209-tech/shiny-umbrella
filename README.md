@@ -42,7 +42,7 @@ Requires Python 3.12 and [uv](https://github.com/astral-sh/uv). Secrets live onl
 | Phase | Scope | Status |
 |-------|-------|--------|
 | 1 | Core types, market clock, bus, broker interface, paper broker, cost model | done |
-| 2 | Dhan adapter, symbol map, archive ingest | |
+| 2 | Dhan adapter, symbol map, archive ingest | done |
 | 3 | Trading engine (data / signal / risk / execution / monitor agents) | |
 | 4 | Backtester | |
 | 5 | Training pipeline, registry, promotion gate, nightly schedule | |
@@ -63,7 +63,7 @@ Requires Python 3.12 and [uv](https://github.com/astral-sh/uv). Secrets live onl
 | `trading/brokers/paper.py` | `PaperBroker`: wraps any `MarketData` for quotes, simulates fills (limit/market/SL/SLM, slippage), applies Indian costs, tracks cash/positions/PnL/margin, streams order updates. |
 | `trading/brokers/paper_store.py` | SQLite persistence for the paper account. |
 | `trading/backtest/costs.py` | Indian fee model per segment (brokerage, STT/CTT, exchange, SEBI, stamp, GST, DP) and `round_trip_cost_bps` for the risk threshold. |
-| `data/holidays/holidays.json` | 2026 NSE/MCX holidays and MCX evening-only sessions. **Unverified — check against exchange circulars.** |
+| `data/holidays/holidays.json` | 2026 NSE holidays from the official NSE API (`scripts/fetch_holidays.py`); MCX split sessions from dhan.co/market-holiday. |
 
 Run the tests:
 
@@ -75,3 +75,51 @@ The Phase 1 acceptance test (`tests/test_paper.py::test_one_day_replay_buy_then_
 replays a full NSE session of synthetic 1-minute bars through `PaperBroker`, buys with a
 resting limit, sells at market, and checks cash, position and PnL against hand-computed
 fees — then reloads the account from SQLite and checks it again.
+
+## Phase 2 — what exists
+
+Read [`trading/brokers/README.md`](trading/brokers/README.md) first: it records everything taken
+from the DhanHQ v2 docs (endpoints, limits, packet layouts, instrument-master quirks) and the
+open `TODO(dhan)` items.
+
+| Module | Purpose |
+|--------|---------|
+| `trading/brokers/dhan.py` | `DhanBroker`: REST client with rate limiter, retries, JWT expiry + renewal; historical daily/intraday (90-day chunking, epoch→IST); binary market-feed decoder and websocket stream with reconnect/resubscribe; order-update websocket; order/position/funds mapping; idempotent `place_order` by tag; `reconcile()`. |
+| `trading/brokers/dhan_instruments.py` | Downloads the detailed scrip master (public CSV), caches it per day in `data/instruments/`, builds the symbol map. |
+| `trading/brokers/symbols.py` | `SymbolMap`: canonical ↔ `(segment, security id)`, aliases (monthly ↔ day-specific), `front_month()`, `option()`, MCX contract multipliers. |
+| `trading/training/ingest.py` | `Archive` (Parquet: `1m/<symbol>/<date>.parquet`, `1d/<symbol>/<year>.parquet`), `validate_bars()` gap/duplicate/price/session report, split detection, corporate actions applied on read, incremental `ingest()` that tops up from the next expected bar. |
+| `trading/core/universe.py` | Nifty 100 constituents from NSE's CSV (cached), index symbols. |
+| `scripts/ingest_history.py` | CLI: `--symbols` / `--universe nifty100|indices|gold|all`, `--intervals`, `--start/--end/--days`, `--dry-run`, `--report-json`. Prints bar counts and the gap report per symbol. |
+| `scripts/fetch_holidays.py` | Refreshes the NSE block of `data/holidays/holidays.json` from the NSE holiday API (MCX block is kept by hand). |
+| `data/corporate_actions.json` | Confirmed splits/bonuses (ratio per ex-date); the archive itself is never rewritten. |
+| `tests/fixtures/dhan_master_sample.csv` | 77 real rows of the instrument master used by the symbol-map tests. |
+
+Also changed in Phase 2: order tags are 27 chars (Dhan's `correlationId` limit is 30),
+`Instrument`/`Position`/`Fill` carry a contract `multiplier` (MCX quantity is in lots),
+and the market calendar extends MCX to 23:55 during US daylight-saving time.
+
+### Running it
+
+1. Put `DHAN_CLIENT_ID` and `DHAN_ACCESS_TOKEN` in `.env` (24-hour token from
+   web.dhan.co → My Profile → Access DhanHQ APIs). Data APIs need Dhan's paid Data API
+   subscription; order APIs additionally need a static IP whitelisted in the portal.
+2. Ingest one symbol and read the gap report:
+
+```bash
+.venv/bin/python scripts/ingest_history.py --symbols NSE:RELIANCE --intervals 1m,1d --days 10
+```
+
+3. Or run the live integration test (skipped by default, never in CI):
+
+```bash
+DHAN_INTEGRATION=1 .venv/bin/python -m pytest -m integration -s tests/test_dhan_integration.py
+```
+
+4. Whole universe, daily bars since 2021, then keep topping up nightly:
+
+```bash
+.venv/bin/python scripts/ingest_history.py --universe all --intervals 1d --start 2021-01-01
+.venv/bin/python scripts/ingest_history.py --universe all --intervals 1m,1d
+```
+
+`--dry-run` shows what would be fetched without credentials.

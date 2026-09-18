@@ -86,3 +86,13 @@ def test_zero_schedule():
     f = compute_fees("NSE:RELIANCE", Side.BUY, 10, 2500.0, ProductType.CNC, schedule=ZERO_FEES)
     assert f.total == 0.0
     assert DEFAULT_FEES is not ZERO_FEES
+
+
+def test_multiplier_scales_contract_value():
+    lots = compute_fees("MCX:GOLDM-OCT26", Side.SELL, 1, 150_000.0, ProductType.NRML, multiplier=10)
+    units = compute_fees("MCX:GOLDM-OCT26", Side.SELL, 10, 150_000.0, ProductType.NRML)
+    assert lots.total == pytest.approx(units.total)
+    assert lots.stt == pytest.approx(1_500_000 * 0.0001)  # CTT on sell
+    assert round_trip_cost_bps(
+        "MCX:GOLDM-OCT26", 1, 150_000.0, ProductType.NRML, multiplier=10
+    ) == pytest.approx(round_trip_cost_bps("MCX:GOLDM-OCT26", 10, 150_000.0, ProductType.NRML))

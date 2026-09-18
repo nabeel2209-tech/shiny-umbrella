@@ -2,7 +2,7 @@ from datetime import UTC, date, datetime, time, timedelta
 
 import pytest
 
-from trading.core.clock import DEFAULT_HOLIDAYS_FILE, MarketCalendar, SimClock
+from trading.core.clock import DEFAULT_HOLIDAYS_FILE, MarketCalendar, SimClock, us_dst_active
 from trading.core.types import IST, Interval
 
 
@@ -18,25 +18,50 @@ def test_nse_session_edges(calendar):
     assert calendar.is_open("NFO", at(2026, 9, 18, 12, 0))  # NFO follows NSE
 
 
-def test_mcx_session(calendar):
+def test_mcx_session_follows_us_dst(calendar):
+    # September: US DST in force -> MCX closes 23:55
     assert not calendar.is_open("MCX", at(2026, 9, 18, 8, 59))
     assert calendar.is_open("MCX", at(2026, 9, 18, 9, 0))
-    assert calendar.is_open("MCX", at(2026, 9, 18, 22, 0))
-    assert not calendar.is_open("MCX", at(2026, 9, 18, 23, 30))
+    assert calendar.is_open("MCX", at(2026, 9, 18, 23, 30))
+    assert not calendar.is_open("MCX", at(2026, 9, 18, 23, 55))
+    # January: no DST -> 23:30
+    assert calendar.is_open("MCX", at(2026, 1, 16, 23, 29))
+    assert not calendar.is_open("MCX", at(2026, 1, 16, 23, 30))
+    assert calendar.regular_close("MCX", date(2026, 3, 6)) == time(23, 30)
+    assert calendar.regular_close("MCX", date(2026, 3, 9)) == time(23, 55)
+    assert calendar.regular_close("NSE", date(2026, 3, 9)) == time(15, 30)
+
+
+def test_us_dst_window():
+    assert not us_dst_active(date(2026, 3, 7))
+    assert us_dst_active(date(2026, 3, 8))  # second Sunday of March
+    assert us_dst_active(date(2026, 10, 31))
+    assert not us_dst_active(date(2026, 11, 1))  # first Sunday of November
 
 
 def test_mcx_close_configurable():
-    cal = MarketCalendar.load(DEFAULT_HOLIDAYS_FILE, mcx_close=time(23, 55))
-    assert cal.is_open("MCX", at(2026, 9, 18, 23, 40))
-    assert len(cal.session_bars("MCX", date(2026, 9, 18))) == 895
+    cal = MarketCalendar.load(DEFAULT_HOLIDAYS_FILE, mcx_close=time(23, 55), mcx_dst_close=None)
+    assert cal.is_open("MCX", at(2026, 1, 16, 23, 40))
+    assert len(cal.session_bars("MCX", date(2026, 1, 16))) == 895
+    fixed = MarketCalendar.load(DEFAULT_HOLIDAYS_FILE, mcx_dst_close=None)
+    assert not fixed.is_open("MCX", at(2026, 9, 18, 23, 30))
 
 
 def test_weekend_and_holidays(calendar):
+    assert calendar.verified
     assert not calendar.is_trading_day("NSE", date(2026, 9, 19))  # Saturday
     assert not calendar.is_trading_day("NSE", date(2026, 9, 20))  # Sunday
     assert not calendar.is_trading_day("NSE", date(2026, 10, 2))  # Gandhi Jayanti
     assert not calendar.is_trading_day("MCX", date(2026, 10, 2))
     assert not calendar.is_open("NSE", at(2026, 10, 2, 10, 0))
+    assert not calendar.is_trading_day("NSE", date(2026, 1, 15))  # municipal election (NSE API)
+    assert not calendar.is_trading_day("NFO", date(2026, 1, 15))
+    assert calendar.is_trading_day("NSE", date(2026, 1, 16))
+    # MCX on New Year's Day: morning only
+    assert calendar.session_bounds("MCX", date(2026, 1, 1)) == (
+        at(2026, 1, 1, 9, 0),
+        at(2026, 1, 1, 17, 0),
+    )
 
 
 def test_mcx_evening_only_session_on_nse_holiday(calendar):
@@ -46,6 +71,12 @@ def test_mcx_evening_only_session_on_nse_holiday(calendar):
     assert not calendar.is_open("MCX", at(2026, 3, 3, 10, 0))
     assert calendar.is_open("MCX", at(2026, 3, 3, 18, 0))
     assert calendar.session_bounds("MCX", d) == (at(2026, 3, 3, 17, 0), at(2026, 3, 3, 23, 30))
+    # same pattern inside the DST window resolves the null close to 23:55
+    assert calendar.session_bounds("MCX", date(2026, 3, 26)) == (
+        at(2026, 3, 26, 17, 0),
+        at(2026, 3, 26, 23, 55),
+    )
+    assert not calendar.is_trading_day("NSE", date(2026, 3, 26))
 
 
 def test_next_open(calendar):
@@ -84,8 +115,9 @@ def test_session_bars(calendar):
     assert m1[0] == at(2026, 9, 18, 9, 15)
     assert m1[-1] == at(2026, 9, 18, 15, 29)
     assert len(calendar.session_bars("NSE", d, "5m")) == 75
-    assert calendar.session_bars("NSE", d, Interval.D1) == [at(2026, 9, 18, 9, 15)]
-    assert len(calendar.session_bars("MCX", d, Interval.M1)) == 870
+    assert calendar.session_bars("NSE", d, Interval.D1) == [at(2026, 9, 18, 0, 0)]
+    assert len(calendar.session_bars("MCX", d, Interval.M1)) == 895  # DST close 23:55
+    assert len(calendar.session_bars("MCX", date(2026, 1, 16), Interval.M1)) == 870
     assert calendar.session_bars("NSE", date(2026, 9, 19)) == []
 
 

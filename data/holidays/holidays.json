@@ -1,10 +1,16 @@
 {
-  "_note": "Trading holidays per exchange (IST). Dates listed here MUST be verified against the official exchange circulars before live trading: NSE https://www.nseindia.com/resources/exchange-communication-holidays and MCX https://www.mcxindia.com/market-operations/trading-holidays . 'special_sessions' overrides the normal session for a date (e.g. MCX evening-only sessions on NSE holidays, Diwali muhurat trading). Weekends are always closed.",
-  "_verified": false,
+  "_note": "Trading holidays per exchange (IST). NSE block is refreshed by scripts/fetch_holidays.py from the official NSE holiday API (Capital Market + F&O segments). MCX block is maintained by hand from https://dhan.co/market-holiday/ (Dhan publishes no holiday API) and should be checked against MCX circulars. special_sessions: [open, close]; a null close means the regular close for that date (MCX closes 23:55 during US daylight-saving time, otherwise 23:30). Weekends are always closed unless a special session is listed.",
+  "_verified": true,
+  "_verified_note": "NSE 2026 list fetched from the NSE API on 2026-09-18. MCX 2026 split sessions from dhan.co/market-holiday on 2026-09-18. Unverified items: MCX on 2026-01-15 (Maharashtra municipal election; assumed evening-only like other state holidays) and the 2026-11-08 Muhurat session time (Dhan lists 18:15-19:15, exchanges say 'to be notified').",
   "NSE": {
+    "source": "https://www.nseindia.com/api/holiday-master?type=trading",
+    "fetched_at": "2026-09-18T00:00:00",
     "holidays": [
+      "2026-01-15",
       "2026-01-26",
+      "2026-02-15",
       "2026-03-03",
+      "2026-03-21",
       "2026-03-26",
       "2026-03-31",
       "2026-04-03",
@@ -12,34 +18,67 @@
       "2026-05-01",
       "2026-05-28",
       "2026-06-26",
+      "2026-08-15",
       "2026-09-14",
       "2026-10-02",
       "2026-10-20",
+      "2026-11-08",
       "2026-11-10",
       "2026-11-24",
       "2026-12-25"
     ],
-    "special_sessions": {}
+    "names": {
+      "2026-01-15": "Municipal Corporation Election - Maharashtra",
+      "2026-01-26": "Republic Day",
+      "2026-02-15": "Mahashivratri",
+      "2026-03-03": "Holi",
+      "2026-03-21": "Id-Ul-Fitr (Ramadan Eid)",
+      "2026-03-26": "Shri Ram Navami",
+      "2026-03-31": "Shri Mahavir Jayanti",
+      "2026-04-03": "Good Friday",
+      "2026-04-14": "Dr. Baba Saheb Ambedkar Jayanti",
+      "2026-05-01": "Maharashtra Day",
+      "2026-05-28": "Bakri Id",
+      "2026-06-26": "Muharram",
+      "2026-08-15": "Independence Day",
+      "2026-09-14": "Ganesh Chaturthi",
+      "2026-10-02": "Mahatma Gandhi Jayanti",
+      "2026-10-20": "Dussehra",
+      "2026-11-08": "Diwali Laxmi Pujan (Muhurat trading)",
+      "2026-11-10": "Diwali-Balipratipada",
+      "2026-11-24": "Prakash Gurpurb Sri Guru Nanak Dev",
+      "2026-12-25": "Christmas"
+    },
+    "special_sessions": {
+      "2026-11-08": ["18:15", "19:15"]
+    }
   },
   "MCX": {
+    "source": "https://dhan.co/market-holiday/",
     "holidays": [
       "2026-01-26",
+      "2026-02-15",
+      "2026-03-21",
       "2026-04-03",
+      "2026-08-15",
       "2026-10-02",
+      "2026-11-08",
       "2026-12-25"
     ],
     "special_sessions": {
-      "2026-03-03": ["17:00", "23:30"],
-      "2026-03-26": ["17:00", "23:30"],
-      "2026-03-31": ["17:00", "23:30"],
-      "2026-04-14": ["17:00", "23:30"],
-      "2026-05-01": ["17:00", "23:30"],
-      "2026-05-28": ["17:00", "23:30"],
-      "2026-06-26": ["17:00", "23:30"],
-      "2026-09-14": ["17:00", "23:30"],
-      "2026-10-20": ["17:00", "23:30"],
-      "2026-11-10": ["17:00", "23:30"],
-      "2026-11-24": ["17:00", "23:30"]
+      "2026-01-01": ["09:00", "17:00"],
+      "2026-01-15": ["17:00", null],
+      "2026-03-03": ["17:00", null],
+      "2026-03-26": ["17:00", null],
+      "2026-03-31": ["17:00", null],
+      "2026-04-14": ["17:00", null],
+      "2026-05-01": ["17:00", null],
+      "2026-05-28": ["17:00", null],
+      "2026-06-26": ["17:00", null],
+      "2026-09-14": ["17:00", null],
+      "2026-10-20": ["17:00", null],
+      "2026-11-10": ["17:00", null],
+      "2026-11-24": ["17:00", null]
     }
   }
 }

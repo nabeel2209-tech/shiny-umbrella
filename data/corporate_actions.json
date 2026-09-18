@@ -1,0 +1,4 @@
+{
+  "_doc": "Equity corporate actions applied ON READ by training/ingest.py (the archive stays raw). ratio = new shares per old share: a 1:1 bonus or 2-for-1 split is 2.0, a 1:5 split is 5.0. Bars dated before ex_date are divided by ratio (prices) and multiplied by ratio (volume). scripts/ingest_history.py prints candidate ratios it detects from daily close jumps; add them here once confirmed against the exchange notice.",
+  "actions": {}
+}

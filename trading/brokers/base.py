@@ -42,13 +42,28 @@ class Instrument(BaseModel):
     exchange: Exchange
     kind: InstrumentKind
     broker_id: str  # security id at the broker
+    broker_segment: str = ""  # broker's segment code, e.g. Dhan NSE_FNO
+    broker_kind: str = ""  # broker's instrument type, e.g. Dhan OPTIDX
     name: str = ""
     lot_size: int = 1
     tick_size: float = 0.05
+    multiplier: float = 1.0  # contract value = qty * price * multiplier
+    freeze_qty: int | None = None  # exchange per-order quantity limit
     expiry: date | None = None
+    expiry_flag: str | None = None  # M monthly / W weekly ...
     strike: float | None = None
     option_type: OptionType | None = None
     underlying: str | None = None
+    isin: str | None = None
+    series: str | None = None
+
+    @property
+    def is_derivative(self) -> bool:
+        return self.kind in {InstrumentKind.FUTURE, InstrumentKind.OPTION}
+
+    @property
+    def tradable(self) -> bool:
+        return self.kind is not InstrumentKind.INDEX
 
 
 class BrokerError(Exception):
@@ -57,6 +72,10 @@ class BrokerError(Exception):
 
 class NotConnected(BrokerError):
     pass
+
+
+class AuthError(BrokerError):
+    """Bad, expired or insufficiently privileged credentials."""
 
 
 class OrderRejected(BrokerError):

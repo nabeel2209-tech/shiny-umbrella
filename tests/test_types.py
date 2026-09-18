@@ -15,6 +15,7 @@ from trading.core.types import (
     ProductType,
     Side,
     Tick,
+    new_tag,
 )
 
 
@@ -102,3 +103,32 @@ def test_fee_breakdown_add_and_total():
 def test_interval_seconds():
     assert Interval.M5.seconds == 300
     assert Interval.D1.seconds == 86_400
+
+
+def test_order_tag_fits_dhan_correlation_id_rules():
+    t = new_tag()
+    assert len(t) == 27 and t.isalnum()
+    assert len({new_tag() for _ in range(100)}) == 100
+    base = dict(
+        symbol="NSE:X", side=Side.BUY, qty=1, order_type=OrderType.MARKET, product=ProductType.CNC
+    )
+    assert OrderRequest(**base).tag != OrderRequest(**base).tag
+    OrderRequest(**base, tag="ok tag_1-2")
+    with pytest.raises(ValidationError):
+        OrderRequest(**base, tag="x" * 31)
+    with pytest.raises(ValidationError):
+        OrderRequest(**base, tag="bad/char")
+    with pytest.raises(ValidationError):
+        OrderRequest(**base, tag="")
+
+
+def test_position_and_fill_multiplier():
+    p = Position(
+        symbol="MCX:GOLDM-OCT26",
+        product=ProductType.NRML,
+        qty=2,
+        avg_price=100,
+        last_price=101,
+        multiplier=10,
+    )
+    assert p.unrealised_pnl == pytest.approx(20.0) and p.market_value == pytest.approx(2020.0)

@@ -6,9 +6,11 @@ import asyncio
 
 import pytest
 
+from trading.backtest.costs import compute_fees
 from trading.brokers.base import Broker, UnknownOrder
 from trading.brokers.paper import PaperBroker, PaperConfig, apply_fill_to_position
 from trading.brokers.paper_store import PaperStore
+from trading.brokers.symbols import contract_multiplier
 from trading.core.types import (
     Fill,
     Order,
@@ -342,3 +344,32 @@ async def test_require_trade_through(sim_clock, synthetic_day):
     o = await b.place_order(req(Side.BUY, 1, OrderType.LIMIT, price=bars[1].low))
     b.on_bar(bars[1])  # touches the limit exactly -> not enough
     assert (await b.order_status(o.id)).status is OrderStatus.OPEN
+
+
+async def test_mcx_contract_multiplier_scales_pnl_fees_and_margin(sim_clock):
+    """1 lot of GOLDM (100 g quoted per 10 g -> multiplier 10): a Rs 100 move is Rs 1000."""
+    sym = "MCX:GOLDM-OCT26"
+    b = PaperBroker(
+        config=PaperConfig(
+            starting_cash=1_000_000.0, slippage_bps=0.0, multiplier_for=contract_multiplier
+        ),
+        clock=sim_clock,
+    )
+    b.on_tick(Tick(symbol=sym, ts=sim_clock.now(), ltp=150_000.0))
+    await b.place_order(req(Side.BUY, 1, symbol=sym, product=ProductType.NRML))
+    f1 = (await b.fills())[0]
+    assert f1.multiplier == 10.0 and f1.value == 1_500_000.0
+    assert f1.fees.total == pytest.approx(
+        compute_fees(sym, Side.BUY, 1, 150_000.0, ProductType.NRML, multiplier=10).total
+    )
+    assert (await b.funds()).margin_used == pytest.approx(150_000.0)  # 10% of 15 lakh
+    b.on_tick(Tick(symbol=sym, ts=sim_clock.now(), ltp=150_100.0))
+    pos = (await b.positions())[0]
+    assert pos.multiplier == 10.0 and pos.unrealised_pnl == pytest.approx(1000.0)
+    await b.place_order(req(Side.SELL, 1, symbol=sym, product=ProductType.NRML))
+    f2 = (await b.fills())[1]
+    pos = (await b.positions())[0]
+    assert pos.qty == 0 and pos.realised_pnl == pytest.approx(1000.0)
+    assert (await b.funds()).cash == pytest.approx(
+        1_000_000.0 + 1000.0 - f1.fees.total - f2.fees.total
+    )

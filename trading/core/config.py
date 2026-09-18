@@ -24,12 +24,15 @@ class Settings(BaseSettings):
     # dhan
     dhan_client_id: str = ""
     dhan_access_token: SecretStr = SecretStr("")
+    dhan_feed_mode: Literal["ticker", "quote", "full"] = "full"
 
     # infrastructure
     redis_url: str | None = None
     db_url: str = "sqlite:///data/state.db"
     archive_dir: Path = Path("data/archive")
+    instruments_dir: Path = Path("data/instruments")
     holidays_file: Path = Path("data/holidays/holidays.json")
+    corporate_actions_file: Path = Path("data/corporate_actions.json")
 
     # paper trading
     paper_starting_cash: float = 1_000_000.0
