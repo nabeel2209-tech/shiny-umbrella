@@ -1,0 +1,45 @@
+{
+  "_note": "Trading holidays per exchange (IST). Dates listed here MUST be verified against the official exchange circulars before live trading: NSE https://www.nseindia.com/resources/exchange-communication-holidays and MCX https://www.mcxindia.com/market-operations/trading-holidays . 'special_sessions' overrides the normal session for a date (e.g. MCX evening-only sessions on NSE holidays, Diwali muhurat trading). Weekends are always closed.",
+  "_verified": false,
+  "NSE": {
+    "holidays": [
+      "2026-01-26",
+      "2026-03-03",
+      "2026-03-26",
+      "2026-03-31",
+      "2026-04-03",
+      "2026-04-14",
+      "2026-05-01",
+      "2026-05-28",
+      "2026-06-26",
+      "2026-09-14",
+      "2026-10-02",
+      "2026-10-20",
+      "2026-11-10",
+      "2026-11-24",
+      "2026-12-25"
+    ],
+    "special_sessions": {}
+  },
+  "MCX": {
+    "holidays": [
+      "2026-01-26",
+      "2026-04-03",
+      "2026-10-02",
+      "2026-12-25"
+    ],
+    "special_sessions": {
+      "2026-03-03": ["17:00", "23:30"],
+      "2026-03-26": ["17:00", "23:30"],
+      "2026-03-31": ["17:00", "23:30"],
+      "2026-04-14": ["17:00", "23:30"],
+      "2026-05-01": ["17:00", "23:30"],
+      "2026-05-28": ["17:00", "23:30"],
+      "2026-06-26": ["17:00", "23:30"],
+      "2026-09-14": ["17:00", "23:30"],
+      "2026-10-20": ["17:00", "23:30"],
+      "2026-11-10": ["17:00", "23:30"],
+      "2026-11-24": ["17:00", "23:30"]
+    }
+  }
+}
