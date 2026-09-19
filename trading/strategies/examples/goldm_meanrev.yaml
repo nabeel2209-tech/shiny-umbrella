@@ -1,0 +1,30 @@
+id: goldm_meanrev
+name: GOLDM mean reversion (15m)
+enabled: true
+symbols: [MCX:GOLDM-OCT26]
+interval: 15m
+product: NRML
+rules:
+  long:
+    all:
+      - {feature: range_pos_20, op: lt, value: 0.1}
+      - {feature: rsi_14, op: lt, value: 30.0}
+  short:
+    all:
+      - {feature: range_pos_20, op: gt, value: 0.9}
+      - {feature: rsi_14, op: gt, value: 70.0}
+  exit_long:
+    any:
+      - {feature: range_pos_20, op: gt, value: 0.5}
+  exit_short:
+    any:
+      - {feature: range_pos_20, op: lt, value: 0.5}
+sizing:
+  mode: fixed_qty
+  qty: 1
+execution:
+  urgency: PASSIVE
+  limit_band_bps: 15
+  ttl_seconds: 600
+expected_edge_bps: 20.0   # must clear the round-trip cost hurdle
+notes: Quantity is in lots for MCX; 1 lot of GOLDM is 100 g (multiplier 10).

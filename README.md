@@ -43,7 +43,7 @@ Requires Python 3.12 and [uv](https://github.com/astral-sh/uv). Secrets live onl
 |-------|-------|--------|
 | 1 | Core types, market clock, bus, broker interface, paper broker, cost model | done |
 | 2 | Dhan adapter, symbol map, archive ingest | done |
-| 3 | Trading engine (data / signal / risk / execution / monitor agents) | |
+| 3 | Trading engine (data / signal / risk / execution / monitor agents) | done |
 | 4 | Backtester | |
 | 5 | Training pipeline, registry, promotion gate, nightly schedule | |
 | 6 | FastAPI + dashboard | |
@@ -123,3 +123,58 @@ DHAN_INTEGRATION=1 .venv/bin/python -m pytest -m integration -s tests/test_dhan_
 ```
 
 `--dry-run` shows what would be fetched without credentials.
+
+## Phase 3 — what exists
+
+Five agents on the message bus. They never call each other: the bus is the only
+coupling, so the same code runs against live Dhan, the paper broker or an archive
+replay.
+
+```
+ticks/bars ─► data ─► features.<symbol> ─► signal ─► intents ─► risk ─► approved ─► execution ─► broker
+                                                                  │                      │
+                                                            rejected                   fills ─► portfolio
+                                                                  └──────── monitor ◄────┘
+```
+
+| Module | Purpose |
+|--------|---------|
+| `trading/features/features.py` | **The** feature implementation (constraint 1), imported by the data agent and by training. Causal, finite-window only, so the live rolling buffer reproduces batch values to round-off. |
+| `trading/strategies/schema.py` | Strategy YAML: an explicit condition tree (`{feature, op, value}` with `all`/`any`/`none`), sizing, execution prefs, model reference. No `eval`, so a strategy from the UI cannot run code. |
+| `trading/agents/data.py` | `BarBuilder` (ticks → bars, cumulative-volume deltas, session resets, aggregation) and `DataAgent` (live / replay / warmup, publishes `Bar` + `FeatureVector`). |
+| `trading/agents/signal.py` | One agent per strategy: rules and/or a model score, position-aware entries and exits, sizing (fixed qty / notional / Kelly), emits `OrderIntent`. Picks up a newly promoted model version without a restart. |
+| `trading/agents/risk.py` | Nine rules — kill switch, strategy paused, market hours, instrument sanity, daily loss, cost threshold, Kelly cap, per-instrument limit, gross exposure. Trimming rules cut the size; exits skip the entry-only rules. Issues a one-shot `RiskApproval`. |
+| `trading/agents/execution.py` | Order state machine, urgency → price (never a raw market order on options), slicing by participation and freeze limit, chase with step/slippage caps, TTL cancel, bracket stop on fill with OCO cancellation, rate limiting, reconciliation. |
+| `trading/agents/monitor.py` | Alert log, heartbeats and staleness, kill switch, achieved-vs-mid slippage per strategy. |
+| `trading/agents/portfolio.py` | Positions, day PnL and exposure rebuilt from the fill stream; reconciled from the broker at startup. |
+| `trading/agents/engine.py` | Assembles the five agents, orders the bus subscriptions so a simulated broker sees each bar before any strategy reacts to it, and holds the live-trading gate (constraint 5). |
+| `scripts/run_paper.py` | The whole engine on the paper broker: Dhan's live feed, or `--replay` from the archive. |
+
+### Running it
+
+```bash
+# replay two archived days through the full engine (no network, no credentials)
+.venv/bin/python scripts/run_paper.py --strategies trading/strategies/examples --replay 2026-09-17:2026-09-18
+
+# live Dhan feed, fake cash and fills, state persisted to SQLite
+.venv/bin/python scripts/run_paper.py --strategies trading/strategies/examples
+```
+
+The acceptance test is `tests/test_engine_e2e.py`: it writes bars to a real Parquet
+archive, reads them back, replays them through the engine, and checks the cash,
+position and PnL that land in SQLite against fees worked out by hand in the test
+file — so an error in `backtest/costs.py` cannot hide behind itself.
+
+### Decisions worth knowing
+
+- **A strategy must declare `expected_edge_bps`.** The cost threshold (constraint 8)
+  compares it against the round-trip cost, so a rule-based strategy that cannot
+  state an edge bigger than its costs never gets approved. That is deliberate.
+- **`RiskApproval` carries the intent it approves.** The execution agent therefore
+  needs no prior sighting of the intent, which matters because Redis does not
+  guarantee ordering and agents restart independently.
+- **Exits skip the entry-only rules** (edge, Kelly, position and exposure limits).
+  Closing risk is never blocked by a risk limit; the kill switch still applies.
+- **Bracket stops are OCO.** When a position goes flat the outstanding stop is
+  cancelled, otherwise it would later trigger and open a fresh position the other
+  way — a long-only strategy would quietly end the day short.

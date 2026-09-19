@@ -78,3 +78,49 @@ def ist(trading_day: date) -> Callable[[int, int], datetime]:
 @pytest.fixture
 def sim_clock(ist: Callable[[int, int], datetime]) -> SimClock:
     return SimClock(ist(9, 0))
+
+
+def make_bars(
+    calendar: MarketCalendar,
+    prices: list[float],
+    symbol: str = "NSE:RELIANCE",
+    day: date = TRADING_DAY,
+    *,
+    interval: Interval = Interval.M1,
+    exchange: str = "NSE",
+    volume: int = 1000,
+    start: float | None = None,
+) -> list[Bar]:
+    """Bars following an exact close path, so a test can hand-compute everything.
+
+    Each bar opens at the previous close and its range just covers open..close, so
+    there are no gaps and no spurious intrabar extremes.
+    """
+    stamps = calendar.session_bars(exchange, day, interval)
+    if len(prices) > len(stamps):
+        raise ValueError(f"{len(prices)} prices do not fit in {len(stamps)} bars on {day}")
+    out: list[Bar] = []
+    prev = prices[0] if start is None else start
+    for ts, close in zip(stamps, prices, strict=False):
+        out.append(
+            Bar(
+                symbol=symbol,
+                ts=ts,
+                interval=interval,
+                open=prev,
+                high=max(prev, close),
+                low=min(prev, close),
+                close=close,
+                volume=volume,
+            )
+        )
+        prev = close
+    return out
+
+
+@pytest.fixture
+def bars_from_prices(calendar: MarketCalendar) -> Callable[..., list[Bar]]:
+    def _make(prices: list[float], **kw: object) -> list[Bar]:
+        return make_bars(calendar, prices, **kw)  # type: ignore[arg-type]
+
+    return _make

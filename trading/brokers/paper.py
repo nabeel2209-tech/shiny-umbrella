@@ -360,14 +360,28 @@ class PaperBroker:
             unrealised_pnl=sum(p.unrealised_pnl for p in self._positions.values()),
         )
 
-    async def order_updates(self) -> AsyncIterator[Order | Fill]:
+    def update_queue(self) -> asyncio.Queue[Order | Fill]:
+        """Register and return a queue fed with order and fill updates.
+
+        ``order_updates()`` wraps this for streaming consumers; a replay driver
+        uses the queue directly so it can drain updates between bars and stay
+        deterministic.
+        """
         q: asyncio.Queue[Order | Fill] = asyncio.Queue()
         self._update_queues.append(q)
+        return q
+
+    def release_queue(self, q: asyncio.Queue[Order | Fill]) -> None:
+        if q in self._update_queues:
+            self._update_queues.remove(q)
+
+    async def order_updates(self) -> AsyncIterator[Order | Fill]:
+        q = self.update_queue()
         try:
             while True:
                 yield await q.get()
         finally:
-            self._update_queues.remove(q)
+            self.release_queue(q)
 
     def _get(self, order_id: str) -> Order:
         try:

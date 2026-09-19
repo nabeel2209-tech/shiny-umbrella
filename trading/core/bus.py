@@ -1,8 +1,9 @@
 """Internal message bus.
 
 Topics:
-    bars.<symbol>   Bar
-    ticks.<symbol>  Tick
+    bars.<symbol>       Bar
+    features.<symbol>   FeatureVector        (data agent -> signal agents)
+    ticks.<symbol>      Tick
     signals         Signal
     intents         OrderIntent          (signal agents -> risk agent)
     approved        RiskApproval         (risk agent -> execution agent)
@@ -38,6 +39,7 @@ from trading.core.types import (
     Alert,
     Bar,
     ControlCommand,
+    FeatureVector,
     Fill,
     Heartbeat,
     Order,
@@ -64,11 +66,16 @@ class Topics:
     HEARTBEAT = "heartbeat"
     CONTROL = "control"
     BARS_ALL = "bars.*"
+    FEATURES_ALL = "features.*"
     TICKS_ALL = "ticks.*"
 
     @staticmethod
     def bars(symbol: str) -> str:
         return f"bars.{symbol}"
+
+    @staticmethod
+    def features(symbol: str) -> str:
+        return f"features.{symbol}"
 
     @staticmethod
     def ticks(symbol: str) -> str:
@@ -97,6 +104,7 @@ def register_message_type(cls: type[BaseModel]) -> type[BaseModel]:
 for _cls in (
     Bar,
     Tick,
+    FeatureVector,
     Signal,
     OrderIntent,
     RiskApproval,

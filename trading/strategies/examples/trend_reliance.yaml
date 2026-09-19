@@ -1,0 +1,28 @@
+id: trend_reliance
+name: Trend follow RELIANCE (5m)
+enabled: true
+symbols: [NSE:RELIANCE]
+interval: 5m
+product: MIS
+rules:
+  long:
+    all:
+      - {feature: trend, op: gt, value: 0.0005}
+      - {feature: rsi_14, op: lt, value: 70.0}
+      - {feature: vwap_dist, op: gt, value: 0.0}
+  exit_long:
+    any:
+      - {feature: trend, op: lt, value: 0.0}
+      - {feature: rsi_14, op: gt, value: 80.0}
+sizing:
+  mode: fixed_notional
+  notional: 250000
+execution:
+  urgency: NORMAL
+  limit_band_bps: 8
+  ttl_seconds: 300
+  stop_loss_pct: 0.01
+expected_edge_bps: 25.0   # must clear the round-trip cost hurdle
+notes: >
+  Rule-only example. Long when the fast SMA leads the slow one and price is above
+  the session VWAP; flat otherwise. No model, so no registry lookup.

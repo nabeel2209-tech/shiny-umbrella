@@ -205,6 +205,28 @@ class Tick(BaseModel):
         return self.ltp
 
 
+class FeatureVector(BaseModel):
+    """Features computed from the bar that just closed.
+
+    Published by the data agent on ``features.<symbol>``; signal agents consume it
+    instead of recomputing anything. ``warm`` is False while there is not yet
+    enough history for every feature, and signal agents must ignore those.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    symbol: str
+    ts: ISTDatetime
+    interval: Interval
+    bar: Bar
+    values: dict[str, float] = Field(default_factory=dict)
+    warm: bool = False
+
+    def get(self, name: str, default: float = 0.0) -> float:
+        v = self.values.get(name)
+        return default if v is None else v
+
+
 # --------------------------------------------------------------------------- signals & intents
 
 
@@ -250,14 +272,28 @@ class OrderIntent(BaseModel):
 
 
 class RiskApproval(BaseModel):
+    """A one-shot licence to trade, issued only by the risk agent.
+
+    It carries the ``intent`` itself so the execution agent never has to rely on
+    having seen the intent first - message ordering is not guaranteed on Redis,
+    and an agent may have restarted.
+    """
+
     model_config = ConfigDict(frozen=True)
 
     token: str = Field(default_factory=new_id)
     intent_id: str
+    intent: OrderIntent
     ts: ISTDatetime
     expires_at: ISTDatetime
     approved_qty: int = Field(gt=0)
     checks: dict[str, str] = Field(default_factory=dict)  # rule -> outcome text
+
+    @model_validator(mode="after")
+    def _ids_match(self) -> RiskApproval:
+        if self.intent.id != self.intent_id:
+            raise ValueError("approval intent_id does not match the embedded intent")
+        return self
 
 
 class RiskRejection(BaseModel):
