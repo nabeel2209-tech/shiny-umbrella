@@ -13,7 +13,8 @@ absolute checks come first):
 ``strategy_enabled``         the intent's strategy has not been paused
 ``market_hours``             the instrument's exchange is open (exits may be exempt)
 ``instrument``               tradable, sane price, quantity is a whole number of lots
-``daily_loss``               today's PnL is above the loss limit
+``daily_loss``               today's PnL is above the loss limit (entries only)
+``intraday_cutoff``          no new MIS entries in the last minutes before close
 ``cost_threshold``           |expected edge| exceeds the round-trip cost (constraint 8)
 ``kelly_size``               f = p/a - q/b, capped at ``max_kelly_fraction`` of equity
 ``position_limit``           per-instrument value cap; trims the quantity
@@ -23,15 +24,19 @@ absolute checks come first):
 Rules that *trim* run last so a large intent becomes a smaller approved order
 rather than a rejection. An intent trimmed to zero is rejected.
 
-Exits (``meta.is_exit``) skip the edge and Kelly checks and may be allowed to
-reduce a position even when other limits are breached - closing risk is never
-blocked by a risk limit.
+Exits skip every entry-only rule, so a position can always be reduced even when
+limits are breached - closing risk is never blocked by a risk limit. Only a manual
+kill switch stops exits too.
+
+Breaching the daily loss limit halts new entries **for the rest of that day** and
+resumes automatically on the next trading day. A manual KILL stays latched until
+someone sends RESUME.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import timedelta
+from datetime import date, timedelta
 
 from trading.agents.base import Agent
 from trading.agents.portfolio import Portfolio
@@ -65,6 +70,7 @@ class RiskLimits:
     slippage_bps: float = 2.0  # assumed, added to the cost hurdle
     max_order_value: float = 1_000_000.0  # single-order sanity cap
     require_market_open: bool = True
+    mis_entry_cutoff_minutes: int | None = 15  # no new MIS entries this close to the close
     allow_exits_when_closed: bool = False
     approval_ttl_seconds: int = 120
     fee_schedule: FeeSchedule = field(default_factory=lambda: DEFAULT_FEES)
@@ -112,6 +118,8 @@ class RiskAgent(Agent):
         self.lot_sizes = lot_size_for or {}
         self.killed = False
         self.kill_reason = ""
+        self.halted_day: date | None = None  # day the loss limit was hit
+        self.halt_reason = ""
         self.paused_strategies: set[str] = set()
         self.approved_count = 0
         self.rejected_count = 0
@@ -140,15 +148,20 @@ class RiskAgent(Agent):
                 self.paused_strategies.discard(cmd.reason)
 
     async def _on_fill(self, _topic: str, fill: Fill) -> None:  # type: ignore[override]
-        """Trip the kill switch the moment the daily loss limit is breached."""
-        if self.killed:
+        """Halt new entries for the day the moment the loss limit is breached."""
+        day = self.portfolio.day.day if self.portfolio.day else fill.ts.date()
+        if self.halted_day == day:
             return
         limit = self._daily_loss_limit()
         if self.portfolio.day_pnl <= -limit:
-            self.killed = True
-            self.kill_reason = f"daily loss limit hit: {self.portfolio.day_pnl:.2f} <= -{limit:.2f}"
+            self.halted_day = day
+            self.halt_reason = (
+                f"daily loss limit hit: {self.portfolio.day_pnl:,.2f} <= -{limit:,.2f}"
+            )
             await self.alert(
-                AlertLevel.CRITICAL, f"KILL: {self.kill_reason}", day_pnl=self.portfolio.day_pnl
+                AlertLevel.CRITICAL,
+                f"entries halted for {day}: {self.halt_reason}",
+                day_pnl=self.portfolio.day_pnl,
             )
 
     def _daily_loss_limit(self) -> float:
@@ -218,10 +231,11 @@ class RiskAgent(Agent):
             self._strategy_enabled,
             self._market_hours,
             self._instrument,
-            self._daily_loss,
         ]
         if not exiting:
             rules += [
+                self._daily_loss,
+                self._intraday_cutoff,
                 self._cost_threshold,
                 self._kelly_size,
                 self._position_limit,
@@ -282,6 +296,9 @@ class RiskAgent(Agent):
         return RuleResult(True, "instrument", f"{parsed.kind} lot {lot}, value {value:,.0f}")
 
     def _daily_loss(self, intent: OrderIntent, qty: int) -> RuleResult:
+        today = self.clock.now().date()
+        if self.halted_day == today:
+            return RuleResult(False, "daily_loss", f"entries halted today: {self.halt_reason}")
         limit = self._daily_loss_limit()
         pnl = self.portfolio.day_pnl
         if pnl <= -limit:
@@ -289,6 +306,21 @@ class RiskAgent(Agent):
                 False, "daily_loss", f"day PnL {pnl:,.0f} at or past limit -{limit:,.0f}"
             )
         return RuleResult(True, "daily_loss", f"day PnL {pnl:,.0f} vs limit -{limit:,.0f}")
+
+    def _intraday_cutoff(self, intent: OrderIntent, qty: int) -> RuleResult:
+        """MIS positions are squared off by the broker before the close; opening
+        one minutes before that only buys a forced exit and two sets of costs."""
+        minutes = self.limits.mis_entry_cutoff_minutes
+        if intent.product is not ProductType.MIS or minutes is None:
+            return RuleResult(True, "intraday_cutoff", "not applicable")
+        now = self.clock.now()
+        bounds = self.calendar.session_bounds(parse_symbol(intent.symbol).exchange, now.date())
+        if bounds is None:
+            return RuleResult(True, "intraday_cutoff", "no session")
+        cutoff = bounds[1] - timedelta(minutes=minutes)
+        if now >= cutoff:
+            return RuleResult(False, "intraday_cutoff", f"no new MIS entries after {cutoff:%H:%M}")
+        return RuleResult(True, "intraday_cutoff", f"before {cutoff:%H:%M}")
 
     def _cost_threshold(self, intent: OrderIntent, qty: int) -> RuleResult:
         cost_bps = round_trip_cost_bps(

@@ -44,7 +44,7 @@ Requires Python 3.12 and [uv](https://github.com/astral-sh/uv). Secrets live onl
 | 1 | Core types, market clock, bus, broker interface, paper broker, cost model | done |
 | 2 | Dhan adapter, symbol map, archive ingest | done |
 | 3 | Trading engine (data / signal / risk / execution / monitor agents) | done |
-| 4 | Backtester | |
+| 4 | Backtester | done |
 | 5 | Training pipeline, registry, promotion gate, nightly schedule | |
 | 6 | FastAPI + dashboard | |
 | 7 | Hardening: docker compose, logging, alerts, runbook | |
@@ -178,3 +178,58 @@ file — so an error in `backtest/costs.py` cannot hide behind itself.
 - **Bracket stops are OCO.** When a position goes flat the outstanding stop is
   cancelled, otherwise it would later trigger and open a fresh position the other
   way — a long-only strategy would quietly end the day short.
+
+## Phase 4 — what exists
+
+The backtester is the production engine replayed over the archive. `BacktestRunner`
+builds the same `TradingEngine` the paper and live runners use and swaps in a
+simulated broker; nothing about signals, risk or execution is re-implemented.
+
+| Module | Purpose |
+|--------|---------|
+| `trading/backtest/sim_broker.py` | `SimBroker`: the paper broker with the optimism removed — nothing fills on the bar that produced the signal, limits need a trade-through (a touch is not a fill), stops fill at the gap, liquidity-taking fills pay slippage from a pluggable model (`FixedSlippage`, `VolumeSlippage` square-root impact), optional volume participation cap with partial fills, Indian costs on every fill. In memory only. |
+| `trading/backtest/metrics.py` | FIFO round-trip trades from fills (fees split pro rata, open lots marked to market), trade stats (hit rate, profit factor, expectancy), equity stats (return, Sharpe/Sortino, drawdown with duration), fee breakdown, turnover. Reusable for paper/live accounts. |
+| `trading/backtest/runner.py` | `BacktestConfig` / `BacktestRunner` / `BacktestResult`: loads bars (resampling from 1m when an interval is not archived), primes features from the days before `start`, replays bars in completion order, records the equity curve, saves JSON + CSV. `list_runs()` for the dashboard. |
+| `scripts/run_backtest.py` | CLI: `--start/--end`, `--only`, `--impact`, `--participation`, `--liquidate`, `--list`. |
+| `trading/strategies/benchmarks/` | Buy-and-hold NIFTYBEES, the yardstick to run beside any equity strategy. |
+
+Each run writes `data/backtests/<run_id>/`: `summary.json` (config with a
+fingerprint, metrics, per-strategy breakdown), `trades.csv`, `equity.csv`,
+`fills.csv`, `orders.csv` and the strategy YAML exactly as run.
+
+```bash
+.venv/bin/python scripts/run_backtest.py --start 2026-08-03 --end 2026-09-18
+.venv/bin/python scripts/run_backtest.py --strategies trading/strategies/benchmarks \
+    --start 2026-01-01 --end 2026-06-30 --liquidate --max-position 1000000
+.venv/bin/python scripts/run_backtest.py --list
+```
+
+Acceptance tests (`tests/test_backtest.py`): an always-flat strategy makes zero
+trades with a flat equity curve; buy-and-hold earns exactly the archive's return on
+the capital it invests when trading is free, and exactly that minus hand-computed
+delivery charges and slippage when it is not.
+
+### What makes it honest
+
+- **Decisions happen when a bar completes.** The engine's clock reads the bar's
+  end (`MarketCalendar.bar_end`), and the order fills on the *next* bar.
+- **Limits need a trade-through; stops fill at the gap.** Both are the usual ways a
+  backtest flatters itself.
+- **MIS is squared off 10 minutes before each exchange's close**, as the broker
+  would, and new MIS entries stop 15 minutes before the close (`intraday_cutoff`),
+  so an intraday strategy can never hold overnight in simulation.
+- **Warm features from the first bar** — the buffers are primed from history
+  before `start`, exactly as the live data agent does from broker history.
+- **Fast without a second feature implementation.** Features for a known series
+  are computed once with the same `compute_features` training uses; a test proves
+  the decisions are identical to recomputing on every bar (~0.13 ms/bar vs ~3.6).
+
+### Changed in earlier phases along the way
+
+- `Funds.equity` was `cash + unrealised PnL`, which undercounts a long equity
+  position by its whole cost. It is now `cash + positions_value`.
+- Stops (paper and sim) fill at the gap price when the market jumps through them.
+- The daily loss limit now halts **entries for that day** and resumes the next
+  day; it no longer latches the kill switch or blocks exits. A manual KILL still
+  stops everything until RESUME.
+- The order rate limiter is wall-clock, so backtests switch it off.

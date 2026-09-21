@@ -127,3 +127,21 @@ def test_duplicate_ids_rejected(tmp_path):
     with pytest.raises(ValueError, match="duplicate strategy ids"):
         load_strategies(tmp_path)
     assert load_strategies(tmp_path / "nothing-here") == []
+
+
+def test_always_rule_and_feature_needs():
+    hold = StrategyConfig.model_validate(
+        {
+            "id": "hold",
+            "symbols": ["NSE:NIFTYBEES"],
+            "product": "CNC",
+            "expected_edge_bps": 100,
+            "rules": {"long": {"always": True}},
+        }
+    )
+    assert hold.rules["long"].evaluate({}) is True
+    assert hold.features_used() == set()
+    assert hold.needs_features is False  # can act before any feature is warm
+    assert StrategyConfig.from_yaml_str(MINIMAL).needs_features is True
+    assert RuleGroup(always=True, all=[Condition(feature="a", value=0)]).evaluate({"a": 1.0})
+    assert not RuleGroup(always=True, all=[Condition(feature="a", value=0)]).evaluate({"a": -1.0})

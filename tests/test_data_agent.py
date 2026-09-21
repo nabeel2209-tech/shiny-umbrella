@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 
 import pytest
 
@@ -256,3 +256,16 @@ def test_merge_bars_is_chronological_and_deterministic(calendar):
         (16, "NSE:BBB"),
     ]
     assert merge_bars([a, b]) == merged
+
+
+async def test_prime_fills_buffers_without_publishing(calendar, sim_clock):
+    bus = InMemoryBus()
+    bars, features, _ = await collect(bus)
+    a = agent(bus, calendar, sim_clock)
+    history = make_synthetic_day(calendar, day=date(2026, 9, 17))
+    assert a.prime(history) == 375
+    assert a.prime(history[:10]) == 0  # already there
+    assert bars == [] and features == []
+    # the first live bar is warm straight away
+    await a.emit_bar(make_synthetic_day(calendar)[0])
+    assert features[-1].warm

@@ -11,7 +11,7 @@ independently so a mistake in ``backtest/costs.py`` cannot hide behind itself.
 
 from __future__ import annotations
 
-from datetime import date, datetime, timedelta
+from datetime import date, timedelta
 
 import pytest
 
@@ -174,10 +174,10 @@ async def test_archive_replay_produces_hand_computed_cash_and_pnl(
     expected_exit_price = slipped(100.0, Side.SELL)
     assert entry.price == expected_entry_price == 101.0202
     assert exit_.price == expected_exit_price == 99.98
-    assert entry.ts == datetime.combine(DAY, datetime.min.time(), tzinfo=entry.ts.tzinfo).replace(
-        hour=9, minute=56
-    )
-    assert exit_.ts.hour == 10 and exit_.ts.minute == 0
+    # the entry signal comes from the 09:56 bar, which is only complete at 09:57 -
+    # that is the earliest a live system could have acted, so that is the fill time
+    assert (entry.ts.hour, entry.ts.minute) == (9, 57)
+    assert (exit_.ts.hour, exit_.ts.minute) == (10, 1)
 
     # --- fees, computed independently above
     entry_fees = intraday_equity_fees(Side.BUY, 10, expected_entry_price)

@@ -229,9 +229,9 @@ def test_daily_loss_fraction_is_the_tighter_of_the_two(calendar, portfolio, cloc
     assert check(agent)[1].rule == "daily_loss"
 
 
-async def test_daily_loss_trips_the_kill_switch_on_the_fill_that_breaches_it(
-    calendar, portfolio, clock
-):
+async def test_breaching_the_loss_limit_halts_entries_for_the_day_only(calendar, portfolio, clock):
+    """Entries stop the moment the limit is hit; exits still go through, so the
+    losing position can be closed; the next trading day starts fresh."""
     bus = InMemoryBus()
     alerts = []
 
@@ -239,20 +239,73 @@ async def test_daily_loss_trips_the_kill_switch_on_the_fill_that_breaches_it(
         alerts.append(m)
 
     await bus.subscribe(Topics.ALERTS, on_alert)
-    agent = RiskAgent(
-        bus,
-        portfolio,
-        calendar,
-        RiskLimits(max_daily_loss=1_000, max_daily_loss_fraction=None),
-        clock=clock,
-    )
+    limits = RiskLimits(max_daily_loss=1_000, max_daily_loss_fraction=None)
+    agent = RiskAgent(bus, portfolio, calendar, limits, clock=clock)
     await agent.start()
-    portfolio.apply_fill(fill(qty=10, price=2500.0))
-    await bus.publish(Topics.FILLS, fill(qty=10, side=Side.SELL, price=2300.0))
-    portfolio.apply_fill(fill(qty=10, side=Side.SELL, price=2300.0))
-    await bus.publish(Topics.FILLS, fill(qty=1, side=Side.SELL, price=2300.0))
-    assert agent.killed and "daily loss limit" in agent.kill_reason
-    assert any(a.level == "CRITICAL" for a in alerts)
+    entry = fill(qty=10, price=2500.0)
+    portfolio.apply_fill(entry)
+    portfolio.mark(SYM, 2300.0)  # -2,000 open loss
+    await bus.publish(Topics.FILLS, entry)
+
+    assert agent.halted_day == OPEN_TIME.date() and not agent.killed
+    assert any(a.level == "CRITICAL" and "entries halted" in a.message for a in alerts)
+    _, rejection = check(agent, i=intent(symbol="NSE:TCS"))
+    assert rejection.rule == "daily_loss" and "halted" in rejection.reason
+    approval, _ = check(agent, side=Side.SELL)  # closing the loser is allowed
+    assert approval is not None
+
+    # recover the loss the same day: still halted, the halt is for the day
+    portfolio.mark(SYM, 2600.0)
+    assert check(agent, i=intent(symbol="NSE:TCS"))[1].rule == "daily_loss"
+
+    # next session: a new day, entries resume
+    next_day = datetime(2026, 9, 21, 10, 0, tzinfo=IST)
+    clock.set(next_day)
+    portfolio.mark(SYM, 2600.0, next_day)
+    assert check(agent, i=intent(symbol="NSE:TCS", ts=next_day))[0] is not None
+
+
+def test_a_manual_kill_is_different_from_a_loss_halt(calendar, portfolio, clock):
+    agent = make_agent(calendar, portfolio, clock)
+    portfolio.apply_fill(fill(qty=10))
+    agent.killed = True
+    assert check(agent, side=Side.SELL)[1].rule == "kill_switch"  # a kill stops exits too
+
+
+# --------------------------------------------------------------------------- rule: intraday cutoff
+
+
+def test_no_new_mis_entries_near_the_close(calendar, portfolio):
+    late = SimClock(datetime(2026, 9, 18, 15, 16, tzinfo=IST))  # cutoff is 15:15
+    agent = make_agent(calendar, portfolio, late)
+    _, rejection = check(agent, product=ProductType.MIS)
+    assert rejection.rule == "intraday_cutoff" and "15:15" in rejection.reason
+    # delivery is not squared off, so it is unaffected
+    assert check(agent, product=ProductType.CNC, qty=100, expected_edge_bps=80.0)[0] is not None
+    # and an MIS exit is still allowed
+    portfolio.apply_fill(fill(qty=10, ts=late.now()))
+    assert check(agent, side=Side.SELL, product=ProductType.MIS)[0] is not None
+
+
+def test_mis_cutoff_follows_each_exchange_close(calendar, portfolio):
+    # MCX closes 23:55 in September (US DST), so 23:30 is still before its cutoff
+    evening = SimClock(datetime(2026, 9, 18, 23, 30, tzinfo=IST))
+    agent = make_agent(
+        calendar, portfolio, evening, RiskLimits(max_order_value=5e6, max_position_value=5e6)
+    )
+    gold = intent(
+        symbol="MCX:GOLDM-OCT26", product=ProductType.MIS, qty=1, reference_price=150_000.0
+    )
+    assert check(agent, i=gold)[0] is not None
+    evening.set(datetime(2026, 9, 18, 23, 41, tzinfo=IST))
+    assert check(agent, i=gold)[1].rule == "intraday_cutoff"
+    off = make_agent(
+        calendar,
+        portfolio,
+        evening,
+        RiskLimits(mis_entry_cutoff_minutes=None, max_order_value=5e6, max_position_value=5e6),
+    )
+    assert check(off, i=gold)[0] is not None
 
 
 # --------------------------------------------------------------------------- rule: cost threshold

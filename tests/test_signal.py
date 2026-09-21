@@ -423,3 +423,10 @@ async def test_unknown_feature_alerts_instead_of_crashing():
     await bus.publish(Topics.features(SYM), fv(trend=0.02))
     assert intents == []
     assert agent.errors == 0  # handled, not an unhandled exception
+
+
+async def test_a_featureless_strategy_acts_before_warmup():
+    cfg = strategy(rules={"long": {"always": True}})
+    bus, agent, _, _, intents = await build(cfg)
+    await bus.publish(Topics.features(SYM), fv(warm=False))
+    assert len(intents) == 1 and agent.skipped_cold == 0

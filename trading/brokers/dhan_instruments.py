@@ -231,6 +231,18 @@ def _instrument_from_row(row, segment: str) -> tuple[Instrument | None, list[str
     return inst, aliases
 
 
+def load_cached_symbol_map(cache_dir: Path | str = "data/instruments") -> SymbolMap | None:
+    """The newest cached instrument master, without touching the network.
+
+    Backtests use it for lot sizes, ticks and freeze limits; when nothing is
+    cached they fall back to lot 1 rather than failing offline.
+    """
+    files = sorted(Path(cache_dir).glob("dhan_master_*.parquet"))
+    if not files:
+        return None
+    return build_symbol_map(pd.read_parquet(files[-1]), source=str(files[-1]))
+
+
 class DhanInstrumentMaster:
     """Daily-cached download of the Dhan scrip master."""
 

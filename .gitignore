@@ -20,6 +20,7 @@ data/*.db
 data/*.db-journal
 data/models/
 data/logs/
+data/backtests/
 data/instruments/
 *.parquet
 

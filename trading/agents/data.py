@@ -23,13 +23,22 @@ from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 
+import numpy as np
+
 from trading.agents.base import Agent
 from trading.brokers.base import MarketData
 from trading.brokers.symbols import parse_symbol
 from trading.core.bus import MessageBus, Topics
 from trading.core.clock import Clock, MarketCalendar
 from trading.core.types import AlertLevel, Bar, FeatureVector, Interval, Tick
-from trading.features.features import DEFAULT_SPEC, FeatureSpec, latest_features
+from trading.features.features import (
+    DEFAULT_SPEC,
+    FeatureSpec,
+    bars_to_feature_frame,
+    compute_features,
+    is_warm,
+    latest_features,
+)
 
 
 class BarBuilder:
@@ -175,6 +184,9 @@ class DataAgent(Agent):
         self.source = source
         self._builders: dict[tuple[str, Interval], BarBuilder] = {}
         self._buffers: dict[tuple[str, Interval], deque[Bar]] = {}
+        self._precomputed: dict[
+            tuple[str, Interval], dict[datetime, tuple[Bar, dict[str, float], bool]]
+        ] = {}
         self.bars_published = 0
         self.ticks_seen = 0
 
@@ -218,7 +230,11 @@ class DataAgent(Agent):
         await self.publish(Topics.bars(bar.symbol), bar)
         if not self.cfg.publish_features:
             return
-        values, warm = latest_features(list(buf), self.cfg.spec, bar.interval)
+        known = self._precomputed.get((bar.symbol, bar.interval), {}).get(bar.ts)
+        if known is not None and known[0] == bar:
+            _, values, warm = known
+        else:
+            values, warm = latest_features(list(buf), self.cfg.spec, bar.interval)
         await self.publish(
             Topics.features(bar.symbol),
             FeatureVector(
@@ -248,7 +264,48 @@ class DataAgent(Agent):
             if completed is not None:
                 await self.emit_bar(completed)
 
+    # ------------------------------------------------------------------ replay speed-up
+    def precompute(self, bars: Iterable[Bar]) -> int:
+        """Compute features for a whole known series in one pass.
+
+        Only for replay, where every bar is known in advance. It calls the same
+        :func:`compute_features` as the incremental path and as training; because
+        that function is causal, row *t* of the batch equals what the rolling
+        buffer would produce at *t* (to round-off - tested). Recomputing a 376-bar
+        window on every bar costs ~9 ms, which makes a year of minute bars a
+        quarter of an hour; a lookup costs nothing. A bar that differs from the
+        one precomputed (a restatement) falls back to the incremental path.
+        """
+        groups: dict[tuple[str, Interval], list[Bar]] = {}
+        for bar in bars:
+            groups.setdefault((bar.symbol, bar.interval), []).append(bar)
+        n = 0
+        for (symbol, interval), series in groups.items():
+            series = sorted({b.ts: b for b in series}.values(), key=lambda b: b.ts)
+            frame = compute_features(bars_to_feature_frame(series), self.cfg.spec, interval)
+            lookup = self._precomputed.setdefault((symbol, interval), {})
+            for bar, (_, row) in zip(series, frame.iterrows(), strict=True):
+                values = {k: (float(v) if np.isfinite(v) else 0.0) for k, v in row.items()}
+                lookup[bar.ts] = (bar, values, is_warm(row))
+                n += 1
+        return n
+
     # ------------------------------------------------------------------ warmup
+    def prime(self, bars: Iterable[Bar]) -> int:
+        """Load history into the feature buffers without publishing anything.
+
+        The same thing :meth:`warmup` does from a broker, for callers that already
+        hold the bars (a backtest loading the days before its start date).
+        """
+        n = 0
+        for bar in bars:
+            buf = self.buffer(bar.symbol, bar.interval)
+            if buf and bar.ts <= buf[-1].ts:
+                continue
+            buf.append(bar)
+            n += 1
+        return n
+
     async def warmup(self, *, source: MarketData | None = None, end: datetime | None = None) -> int:
         """Fill the feature buffers from history so the first live bar is already warm."""
         src = source or self.source
@@ -319,6 +376,23 @@ class DataAgent(Agent):
             if completed is not None:
                 await self.emit_bar(completed)
         return len(ticks)
+
+
+def resample_bars(bars: Iterable[Bar], interval: Interval, calendar: MarketCalendar) -> list[Bar]:
+    """Aggregate smaller bars into ``interval`` with the same :class:`BarBuilder`
+    the live agent uses, so a backtest on resampled 1m data sees what live would."""
+    builders: dict[str, BarBuilder] = {}
+    out: list[Bar] = []
+    for bar in bars:
+        builder = builders.setdefault(bar.symbol, BarBuilder(bar.symbol, interval, calendar))
+        completed = builder.on_bar(bar)
+        if completed is not None:
+            out.append(completed)
+    for builder in builders.values():
+        last = builder.flush()
+        if last is not None:
+            out.append(last)
+    return sorted(out, key=lambda b: (b.ts, b.symbol))
 
 
 def merge_bars(streams: Sequence[Sequence[Bar]]) -> list[Bar]:

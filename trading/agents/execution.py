@@ -65,7 +65,7 @@ class ExecutionConfig:
     max_chase_steps: int = 3
     max_chase_bps: float = 15.0
     chase_interval_seconds: float = 5.0
-    orders_per_second: float = 8.0
+    orders_per_second: float | None = 8.0  # None: no throttling (simulated time)
     default_tick_size: float = 0.05
     place_bracket_stop: bool = True
     allow_market_orders: bool = False  # never for options, regardless
@@ -150,7 +150,11 @@ class ExecutionAgent(Agent):
         self.broker = broker
         self.cfg = config or ExecutionConfig()
         self.instruments = instruments or {}
-        self.limiter = OrderRateLimiter(self.cfg.orders_per_second)
+        # the broker's orders-per-second cap is wall-clock: it means nothing in a
+        # replay, where it would only put real sleeps into simulated time
+        self.limiter = (
+            OrderRateLimiter(self.cfg.orders_per_second) if self.cfg.orders_per_second else None
+        )
         self._intents: dict[str, OrderIntent] = {}
         self._used_tokens: set[str] = set()
         self._plans: dict[str, ExecutionPlan] = {}  # intent id -> plan
@@ -300,7 +304,8 @@ class ExecutionAgent(Agent):
         *,
         protective: bool = False,
     ) -> Order | None:
-        await self.limiter.acquire()
+        if self.limiter is not None:
+            await self.limiter.acquire()
         try:
             order = await self.broker.place_order(req)
         except BrokerError as e:
@@ -595,10 +600,14 @@ class ExecutionAgent(Agent):
         await self._on_order_progress(order)
 
     async def cancel_all(self, reason: str) -> int:
+        return await self.cancel_where(lambda _o: True, reason)
+
+    async def cancel_where(self, predicate: Callable[[Order], bool], reason: str) -> int:
         n = 0
-        for order_id in list(self._working):
-            await self.cancel(order_id, reason)
-            n += 1
+        for order_id, working in list(self._working.items()):
+            if predicate(working.order):
+                await self.cancel(order_id, reason)
+                n += 1
         return n
 
     # ------------------------------------------------------------------ reconciliation
@@ -643,6 +652,15 @@ class ExecutionAgent(Agent):
         return stats
 
     # ------------------------------------------------------------------ introspection
+    def strategy_of_orders(self) -> dict[str, str]:
+        """Order id -> strategy id, for every order we can trace to an intent."""
+        out: dict[str, str] = {}
+        for order_id, order in self._orders_seen.items():
+            intent = self._intent_for(order)
+            if intent is not None:
+                out[order_id] = intent.strategy_id
+        return out
+
     def working_orders(self) -> list[Order]:
         return [w.order for w in self._working.values()]
 

@@ -203,6 +203,18 @@ class MarketCalendar:
             t += step
         return out
 
+    def bar_end(self, exchange: Exchange | str, ts: datetime, interval: Interval | str) -> datetime:
+        """When the bar starting at ``ts`` is complete - the earliest moment anything
+        could have acted on it. Intraday bars end one interval later (capped at the
+        session close); a daily bar ends at its session's close."""
+        interval = Interval(interval)
+        ts = to_ist(ts)
+        bounds = self.session_bounds(exchange, ts.date())
+        if interval is Interval.D1:
+            return bounds[1] if bounds else ts + timedelta(days=1)
+        end = ts + timedelta(seconds=interval.seconds)
+        return min(end, bounds[1]) if bounds else end
+
     def bar_start(self, ts: datetime, interval: Interval | str) -> datetime:
         """Floor ``ts`` to the start of its bar (session-relative for intraday)."""
         interval = Interval(interval)

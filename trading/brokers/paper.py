@@ -78,6 +78,13 @@ class PaperConfig:
     account_id: str = "default"
     # contract multiplier lookup (MCX lots -> contract value); default 1 for everything
     multiplier_for: Callable[[str], float] | None = None
+    # False: nothing fills at the moment it is placed - it waits for the next price.
+    # The backtest simulator uses this so an order decided on a bar's close cannot
+    # also be filled at that same close.
+    fill_at_placement: bool = True
+    # cap each fill at this fraction of the bar's volume (None: no cap)
+    max_participation: float | None = None
+    lot_size_for: Callable[[str], int] | None = None
 
 
 @dataclass(frozen=True)
@@ -89,6 +96,7 @@ class PriceCtx:
     open: float
     high: float
     low: float
+    volume: int | None = None  # bar volume; None for ticks
 
     @classmethod
     def from_tick(cls, t: Tick) -> PriceCtx:
@@ -96,7 +104,11 @@ class PriceCtx:
 
     @classmethod
     def from_bar(cls, b: Bar) -> PriceCtx:
-        return cls(ts=b.ts, last=b.close, open=b.open, high=b.high, low=b.low)
+        return cls(ts=b.ts, last=b.close, open=b.open, high=b.high, low=b.low, volume=b.volume)
+
+    @classmethod
+    def at(cls, ts: datetime, price: float) -> PriceCtx:
+        return cls(ts=ts, last=price, open=price, high=price, low=price)
 
 
 def apply_fill_to_position(pos: Position, side: Side, qty: int, price: float) -> float:
@@ -254,14 +266,25 @@ class PaperBroker:
         self._orders[order.id] = order
         last = self._last.get(order.symbol)
         if last is not None:
-            self._try_fill(
-                order,
-                PriceCtx(ts=now, last=last, open=last, high=last, low=last),
-                at_placement=True,
-            )
+            if self.cfg.fill_at_placement:
+                self._try_fill(order, PriceCtx.at(now, last), at_placement=True)
+            else:
+                self._tag_marketable(order, last)
         self._persist_order(order)
         self._emit(order)
         return order
+
+    @staticmethod
+    def _tag_marketable(order: Order, last: float) -> None:
+        """Remember whether a limit crossed the market when placed.
+
+        An order that crosses is taking liquidity, so it pays slippage when it
+        fills at the next open. One that merely rests gets hit at its own price.
+        """
+        if order.order_type is not OrderType.LIMIT or order.price is None:
+            return
+        crosses = order.price > last if order.side is Side.BUY else order.price < last
+        order.meta["marketable"] = crosses
 
     def _validate(self, order: Order) -> str | None:
         parsed = parse_symbol(order.symbol)
@@ -322,11 +345,10 @@ class PaperBroker:
         order.updated_at = self.clock.now()
         last = self._last.get(order.symbol)
         if last is not None:
-            self._try_fill(
-                order,
-                PriceCtx(ts=order.updated_at, last=last, open=last, high=last, low=last),
-                at_placement=True,
-            )
+            if self.cfg.fill_at_placement:
+                self._try_fill(order, PriceCtx.at(order.updated_at, last), at_placement=True)
+            else:
+                self._tag_marketable(order, last)
         self._persist_order(order)
         self._emit(order)
         return order
@@ -358,7 +380,66 @@ class PaperBroker:
             margin_used=self._margin_used(),
             realised_pnl=sum(p.realised_pnl - p.fees_paid for p in self._positions.values()),
             unrealised_pnl=sum(p.unrealised_pnl for p in self._positions.values()),
+            positions_value=self.positions_value(),
         )
+
+    def positions_value(self) -> float:
+        """What open positions add to cash: market value for equities and options
+        (bought with cash), unrealised PnL for futures (margined, not paid for)."""
+        total = 0.0
+        for pos in self._positions.values():
+            if pos.qty == 0:
+                continue
+            if parse_symbol(pos.symbol).kind is InstrumentKind.FUTURE:
+                total += pos.unrealised_pnl
+            else:
+                total += pos.market_value
+        return total
+
+    def equity(self) -> float:
+        return self.cash + self.positions_value()
+
+    async def liquidate(
+        self,
+        *,
+        product: ProductType | None = None,
+        symbols: Sequence[str] | None = None,
+        reason: str = "liquidation",
+    ) -> list[Order]:
+        """Close open positions at the last price, as a broker's auto square-off would.
+
+        Fills immediately at last +/- slippage with full fees, whatever
+        ``fill_at_placement`` says: it models the broker closing us out, not an
+        order of ours waiting in the book.
+        """
+        now = self.clock.now()
+        closed: list[Order] = []
+        for pos in list(self._positions.values()):
+            if pos.qty == 0:
+                continue
+            if product is not None and pos.product is not product:
+                continue
+            if symbols is not None and pos.symbol not in symbols:
+                continue
+            last = self._last.get(pos.symbol, pos.last_price or pos.avg_price)
+            req = OrderRequest(
+                symbol=pos.symbol,
+                side=Side.SELL if pos.qty > 0 else Side.BUY,
+                qty=abs(pos.qty),
+                order_type=OrderType.MARKET,
+                product=pos.product,
+            )
+            self._seq += 1
+            order = Order.from_request(
+                req, now, broker_order_id=f"P{self._seq:06d}", status=OrderStatus.OPEN
+            )
+            order.meta["liquidation"] = reason
+            self._orders[order.id] = order
+            self._try_fill(order, PriceCtx.at(now, last), at_placement=True)
+            self._persist_order(order)
+            self._emit(order)
+            closed.append(order)
+        return closed
 
     def update_queue(self) -> asyncio.Queue[Order | Fill]:
         """Register and return a queue fed with order and fill updates.
@@ -395,8 +476,25 @@ class PaperBroker:
             q.put_nowait(payload)
 
     # ------------------------------------------------------------------ matching
-    def _slip(self, side: Side, price: float) -> float:
-        return price * (1 + side.sign * self.cfg.slippage_bps / 10_000)
+    def _slippage_bps(self, order: Order, qty: int, px: PriceCtx) -> float:
+        """Slippage for this fill in basis points; the backtest simulator overrides it."""
+        return self.cfg.slippage_bps
+
+    def _slip(self, order: Order, price: float, px: PriceCtx, qty: int) -> float:
+        bps = self._slippage_bps(order, qty, px)
+        return price * (1 + order.side.sign * bps / 10_000)
+
+    def _lot(self, symbol: str) -> int:
+        return max(1, int(self.cfg.lot_size_for(symbol))) if self.cfg.lot_size_for else 1
+
+    def _fillable_qty(self, order: Order, px: PriceCtx) -> int:
+        """How much of the order this price can fill (volume participation cap)."""
+        qty = order.remaining_qty
+        if self.cfg.max_participation is None or px.volume is None:
+            return qty
+        lot = self._lot(order.symbol)
+        cap = int(px.volume * self.cfg.max_participation) // lot * lot
+        return min(qty, cap)
 
     def _multiplier(self, symbol: str) -> float:
         if self.cfg.multiplier_for is None:
@@ -406,44 +504,82 @@ class PaperBroker:
     def _try_fill(self, order: Order, px: PriceCtx, *, at_placement: bool) -> None:
         if not order.status.is_working:
             return
+        buying = order.side is Side.BUY
         if order.status is OrderStatus.TRIGGER_PENDING:
-            trig = order.trigger_price or 0.0
-            hit = px.high >= trig if order.side is Side.BUY else px.low <= trig
-            if not hit:
-                return
-            order.status = OrderStatus.OPEN
-            order.updated_at = px.ts
-            if order.order_type is OrderType.SLM:
-                # a stop-market triggers into the market at the trigger level
-                ref = trig if not at_placement else px.last
-                self._fill(order, order.remaining_qty, self._slip(order.side, ref), px.ts)
-                return
-            at_placement = True  # newly live limit: treat like a fresh placement
+            self._try_trigger(order, px, at_placement=at_placement)
+            return
 
+        qty = self._fillable_qty(order, px)
+        if qty <= 0:
+            return
         if order.order_type in {OrderType.MARKET, OrderType.SLM}:
             ref = px.last if at_placement else px.open
-            self._fill(order, order.remaining_qty, self._slip(order.side, ref), px.ts)
+            self._fill(order, qty, self._slip(order, ref, px, qty), px.ts)
             return
 
         limit = order.price
         assert limit is not None
-        if order.side is Side.BUY:
-            crossed = px.low < limit if self.cfg.require_trade_through else px.low <= limit
+        strict = self.cfg.require_trade_through
+        if buying:
+            crossed = px.low < limit if strict else px.low <= limit
             if not crossed:
                 return
             if at_placement:
-                fill_price = min(limit, self._slip(Side.BUY, px.last))
+                price = min(limit, self._slip(order, px.last, px, qty))
+            elif px.open < limit:
+                # through the limit at the open: a crossing order pays to take
+                # liquidity, a resting one is simply hit at the opening price
+                taking = order.meta.get("marketable", False)
+                price = min(limit, self._slip(order, px.open, px, qty)) if taking else px.open
             else:
-                fill_price = px.open if px.open < limit else limit
+                price = limit  # traded down through it during the bar
         else:
-            crossed = px.high > limit if self.cfg.require_trade_through else px.high >= limit
+            crossed = px.high > limit if strict else px.high >= limit
             if not crossed:
                 return
             if at_placement:
-                fill_price = max(limit, self._slip(Side.SELL, px.last))
+                price = max(limit, self._slip(order, px.last, px, qty))
+            elif px.open > limit:
+                taking = order.meta.get("marketable", False)
+                price = max(limit, self._slip(order, px.open, px, qty)) if taking else px.open
             else:
-                fill_price = px.open if px.open > limit else limit
-        self._fill(order, order.remaining_qty, fill_price, px.ts)
+                price = limit
+        self._fill(order, qty, price, px.ts)
+
+    def _try_trigger(self, order: Order, px: PriceCtx, *, at_placement: bool) -> None:
+        """A stop order: has the market reached the trigger, and where?
+
+        If the price gapped through the trigger the stop meets the market at the
+        gap price, not at the trigger - filling a gapped stop at its trigger is the
+        classic way a backtest flatters a stop-loss.
+        """
+        buying = order.side is Side.BUY
+        trig = order.trigger_price or 0.0
+        hit = px.high >= trig if buying else px.low <= trig
+        if not hit:
+            return
+        order.status = OrderStatus.OPEN
+        order.updated_at = px.ts
+        if at_placement:
+            touch = px.last
+        else:
+            gapped = px.open >= trig if buying else px.open <= trig
+            touch = px.open if gapped else trig
+        qty = self._fillable_qty(order, px)
+        if qty <= 0:
+            return
+        slipped = self._slip(order, touch, px, qty)
+        if order.order_type is OrderType.SLM:
+            self._fill(order, qty, slipped, px.ts)
+            return
+        # stop-limit: live as a limit from the touch price; fills only if reachable
+        limit = order.price
+        assert limit is not None
+        if buying and touch <= limit:
+            self._fill(order, qty, min(limit, slipped), px.ts)
+        elif not buying and touch >= limit:
+            self._fill(order, qty, max(limit, slipped), px.ts)
+        # otherwise it now rests as an ordinary limit order
 
     def _fill(self, order: Order, qty: int, price: float, ts: datetime) -> None:
         price = round(price, 4)

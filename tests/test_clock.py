@@ -150,3 +150,13 @@ def test_missing_holidays_file_means_no_holidays(tmp_path):
     cal = MarketCalendar.load(tmp_path / "nope.json")
     assert cal.is_trading_day("NSE", date(2026, 10, 2))
     assert not cal.verified
+
+
+def test_bar_end(calendar):
+    assert calendar.bar_end("NSE", at(2026, 9, 18, 10, 0), Interval.M1) == at(2026, 9, 18, 10, 1)
+    assert calendar.bar_end("NSE", at(2026, 9, 18, 15, 25), Interval.M5) == at(2026, 9, 18, 15, 30)
+    # a bar can never end after its session closes
+    assert calendar.bar_end("NSE", at(2026, 9, 18, 15, 0), Interval.H1) == at(2026, 9, 18, 15, 30)
+    # a daily bar is known at the close
+    assert calendar.bar_end("NSE", at(2026, 9, 18, 0, 0), Interval.D1) == at(2026, 9, 18, 15, 30)
+    assert calendar.bar_end("MCX", at(2026, 9, 18, 0, 0), Interval.D1) == at(2026, 9, 18, 23, 55)

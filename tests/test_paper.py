@@ -210,10 +210,72 @@ async def test_stop_market_fills_at_trigger_with_slippage(sim_clock):
     b.on_tick(tick(100.0, sim_clock.now()))
     await b.place_order(req(Side.BUY, 10))
     slm = await b.place_order(req(Side.SELL, 10, OrderType.SLM, trigger=98.0))
-    b.on_tick(tick(97.0, sim_clock.now()))
+    b.on_tick(tick(98.0, sim_clock.now()))  # trades exactly at the trigger
     done = await b.order_status(slm.id)
     assert done.status is OrderStatus.FILLED
     assert done.avg_fill_price == pytest.approx(98.0 * (1 - 0.0002), abs=1e-3)
+
+
+async def test_a_gapped_stop_fills_at_the_gap_not_the_trigger(sim_clock):
+    """The market jumped from 100 to 97 with nothing traded at 98: the stop sells
+    at 97. Filling it at 98 would flatter every stop-loss in a backtest."""
+    b = PaperBroker(clock=sim_clock)
+    b.on_tick(tick(100.0, sim_clock.now()))
+    await b.place_order(req(Side.BUY, 10))
+    slm = await b.place_order(req(Side.SELL, 10, OrderType.SLM, trigger=98.0))
+    b.on_tick(tick(97.0, sim_clock.now()))
+    done = await b.order_status(slm.id)
+    assert done.avg_fill_price == pytest.approx(97.0 * (1 - 0.0002), abs=1e-3)
+
+
+async def test_gapped_stop_on_a_bar_fills_at_the_open(sim_clock, synthetic_day):
+    from trading.core.types import Bar, Interval
+
+    b = PaperBroker(config=PaperConfig(slippage_bps=0.0), clock=sim_clock)
+    b.on_tick(tick(100.0, sim_clock.now()))
+    await b.place_order(req(Side.BUY, 10))
+    slm = await b.place_order(req(Side.SELL, 10, OrderType.SLM, trigger=98.0))
+    ts = sim_clock.now()
+    # opens below the trigger
+    b.on_bar(
+        Bar(symbol=SYM, ts=ts, interval=Interval.M1, open=96.0, high=97.0, low=95.0, close=96.5)
+    )
+    assert (await b.order_status(slm.id)).avg_fill_price == pytest.approx(96.0)
+    # a stop reached during the bar, not at the open, fills at its trigger
+    await b.place_order(req(Side.BUY, 10))
+    slm2 = await b.place_order(req(Side.SELL, 10, OrderType.SLM, trigger=95.0))
+    b.on_bar(
+        Bar(symbol=SYM, ts=ts, interval=Interval.M1, open=96.0, high=96.5, low=94.0, close=94.5)
+    )
+    assert (await b.order_status(slm2.id)).avg_fill_price == pytest.approx(95.0)
+
+
+async def test_equity_counts_the_value_of_held_equities(sim_clock):
+    """Buying stock turns cash into shares; equity must not drop by their cost."""
+    b = PaperBroker(config=PaperConfig(starting_cash=100_000.0, slippage_bps=0.0), clock=sim_clock)
+    b.on_tick(tick(100.0, sim_clock.now()))
+    await b.place_order(req(Side.BUY, 100))
+    fees = (await b.fills())[0].fees.total
+    b.on_tick(tick(110.0, sim_clock.now()))
+    funds = await b.funds()
+    assert funds.cash == pytest.approx(100_000.0 - 10_000.0 - fees)
+    assert funds.positions_value == pytest.approx(11_000.0)
+    assert funds.equity == pytest.approx(100_000.0 + 1_000.0 - fees)
+    assert b.equity() == pytest.approx(funds.equity)
+    assert funds.unrealised_pnl == pytest.approx(1_000.0)
+
+
+async def test_liquidate_closes_positions_at_the_last_price(sim_clock):
+    b = PaperBroker(config=PaperConfig(slippage_bps=0.0), clock=sim_clock)
+    b.on_tick(tick(100.0, sim_clock.now()))
+    await b.place_order(req(Side.BUY, 10, product=ProductType.MIS))
+    await b.place_order(req(Side.BUY, 5, product=ProductType.CNC))
+    b.on_tick(tick(104.0, sim_clock.now()))
+    closed = await b.liquidate(product=ProductType.MIS, reason="square-off")
+    assert len(closed) == 1 and closed[0].meta["liquidation"] == "square-off"
+    assert closed[0].status is OrderStatus.FILLED and closed[0].avg_fill_price == 104.0
+    positions = {p.product: p.qty for p in await b.positions()}
+    assert positions == {ProductType.MIS: 0, ProductType.CNC: 5}  # delivery untouched
 
 
 async def test_insufficient_funds_rejected(sim_clock):

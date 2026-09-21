@@ -106,7 +106,7 @@ class SignalAgent(Agent):
     async def _on_features(self, _topic: str, fv: FeatureVector) -> None:  # type: ignore[override]
         if not self.strategy.enabled or fv.interval is not self.strategy.interval:
             return
-        if not fv.warm:
+        if not fv.warm and self.strategy.needs_features:
             self.skipped_cold += 1
             return
         if fv.symbol in self._pending:

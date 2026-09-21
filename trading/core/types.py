@@ -481,12 +481,22 @@ class Position(BaseModel):
 
 
 class Funds(BaseModel):
+    """Account funds.
+
+    ``positions_value`` is what open positions are worth on top of ``cash``: the
+    market value of equities and options (whose purchase already came out of
+    cash) plus the unrealised PnL of futures (which only move cash when closed).
+    Adding ``unrealised_pnl`` to cash instead would undercount a long equity
+    position by its whole cost. Brokers that report only a balance leave it at 0.
+    """
+
     model_config = ConfigDict(frozen=True)
 
     cash: float  # free cash
     margin_used: float = 0.0
     realised_pnl: float = 0.0
     unrealised_pnl: float = 0.0
+    positions_value: float = 0.0
 
     @property
     def available(self) -> float:
@@ -494,7 +504,7 @@ class Funds(BaseModel):
 
     @property
     def equity(self) -> float:
-        return self.cash + self.unrealised_pnl
+        return self.cash + self.positions_value
 
 
 # --------------------------------------------------------------------------- ops

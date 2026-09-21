@@ -1,0 +1,20 @@
+id: buy_and_hold_niftybees
+name: Buy and hold NIFTYBEES (benchmark)
+enabled: true
+symbols: [NSE:NIFTYBEES]
+interval: 1d
+product: CNC
+rules:
+  long: {always: true}   # reads no features, so it enters on the first bar
+sizing:
+  mode: fixed_notional
+  notional: 950000        # leave room: a limit buy is funds-checked at its limit
+execution:
+  urgency: AGGRESSIVE
+  limit_band_bps: 20
+  ttl_seconds: 86400
+expected_edge_bps: 100.0  # a benchmark, not a forecast; clears delivery costs
+notes: >
+  The yardstick for any equity strategy: what doing nothing clever would have
+  earned over the same window, after delivery charges. Run it alongside a
+  strategy with --strategies trading/strategies/benchmarks.

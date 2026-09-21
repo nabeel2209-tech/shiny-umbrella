@@ -106,17 +106,22 @@ class Condition(BaseModel):
 
 
 class RuleGroup(BaseModel):
-    """``all`` (AND) / ``any`` (OR) / ``none`` (NOR) over conditions and subgroups."""
+    """``all`` (AND) / ``any`` (OR) / ``none`` (NOR) over conditions and subgroups.
+
+    ``always: true`` is a rule that holds unconditionally - what a buy-and-hold
+    benchmark needs, since it reads no features at all.
+    """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
+    always: bool = False
     all: list[Condition | RuleGroup] = Field(default_factory=list)
     any: list[Condition | RuleGroup] = Field(default_factory=list)
     none: list[Condition | RuleGroup] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def _non_empty(self) -> RuleGroup:
-        if not (self.all or self.any or self.none):
+        if not (self.always or self.all or self.any or self.none):
             raise ValueError("rule group is empty")
         return self
 
@@ -225,6 +230,12 @@ class StrategyConfig(BaseModel):
         for group in self.rules.values():
             out |= group.features_used()
         return out
+
+    @property
+    def needs_features(self) -> bool:
+        """Whether signals must wait for warm features. A strategy that reads none
+        (``always`` rules, no model) can act on the very first bar."""
+        return bool(self.features_used()) or self.model.enabled
 
     def validate_features(self, available: list[str] | set[str]) -> list[str]:
         """Feature names the rules reference that the data agent does not produce."""

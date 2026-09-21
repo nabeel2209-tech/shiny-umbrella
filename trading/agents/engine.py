@@ -9,6 +9,16 @@ synchronously in the order they subscribed. The simulated broker is wired to
 react to that same bar. Without that, a backtest would fill on prices a live
 system could never have had.
 
+Time: when a bar is processed, the clock reads the moment that bar *completed*
+(``MarketCalendar.bar_end``), not its start. A decision taken on the 09:56 bar can
+only exist from 09:57, and the risk agent's market-hours and cut-off rules must
+see that.
+
+MIS square-off: brokers close intraday positions shortly before the close. Dhan
+does it on its own; for the paper and backtest brokers the engine does it
+``mis_square_off_minutes`` before each exchange's close, so an intraday strategy
+can never carry a position overnight in a simulation when it could not live.
+
 Constraint 5 lives here too: :func:`confirm_live_trading` is the startup gate that
 real orders must pass, on top of ``LIVE_TRADING=true`` and a Dhan broker.
 """
@@ -20,7 +30,7 @@ import contextlib
 import logging
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from trading.agents.data import DataAgent, DataAgentConfig
 from trading.agents.execution import ExecutionAgent, ExecutionConfig
@@ -30,11 +40,11 @@ from trading.agents.risk import RiskAgent, RiskLimits
 from trading.agents.signal import ModelProvider, SignalAgent
 from trading.brokers.base import Broker, Instrument
 from trading.brokers.paper import PaperBroker
-from trading.brokers.symbols import contract_multiplier
+from trading.brokers.symbols import contract_multiplier, parse_symbol
 from trading.core.bus import MessageBus, Topics
 from trading.core.clock import Clock, MarketCalendar, SystemClock
 from trading.core.config import Settings
-from trading.core.types import Bar, Fill, Interval, Order
+from trading.core.types import Bar, Fill, Interval, Order, ProductType
 from trading.features.features import DEFAULT_SPEC, FeatureSpec
 from trading.strategies.schema import StrategyConfig
 
@@ -86,6 +96,7 @@ class EngineConfig:
     starting_equity: float = 1_000_000.0
     publish_ticks: bool = True
     manage_interval_seconds: float = 1.0
+    mis_square_off_minutes: int | None = 10  # before each exchange's close; None: off
 
     @property
     def symbols(self) -> list[str]:
@@ -212,7 +223,7 @@ class TradingEngine:
             log.warning("could not sync portfolio from broker: %s", e)
             return stats
         self.portfolio.sync_from_broker(funds, positions)
-        self.portfolio.starting_equity = funds.cash - self.portfolio.net_pnl
+        self.portfolio.starting_equity = funds.equity - self.portfolio.net_pnl
         return stats
 
     # ------------------------------------------------------------------ bus wiring
@@ -240,17 +251,59 @@ class TradingEngine:
         return n
 
     # ------------------------------------------------------------------ drivers
+    def bar_end(self, bar: Bar) -> datetime:
+        return self.calendar.bar_end(parse_symbol(bar.symbol).exchange, bar.ts, bar.interval)
+
+    async def step(self, bar: Bar) -> datetime:
+        """Process one completed bar; returns the time it completed."""
+        end = self.bar_end(bar)
+        self.clock_set(end)
+        await self.data.emit_bar(bar)
+        await self.drain_updates()
+        await self.execution.manage(end)
+        await self.drain_updates()
+        await self.square_off_due(end)
+        return end
+
     async def replay(self, bars: Iterable[Bar]) -> int:
-        """Drive the engine from archived bars (Phase 4 backtests and tests)."""
+        """Drive the engine from archived bars (backtests and tests).
+
+        Bars must arrive in order of completion time; for one interval that is
+        simply timestamp order.
+        """
         n = 0
         for bar in bars:
-            self.clock_set(bar.ts)
-            await self.data.emit_bar(bar)
-            await self.drain_updates()
-            await self.execution.manage(bar.ts)
-            await self.drain_updates()
+            await self.step(bar)
             n += 1
         return n
+
+    async def square_off_due(self, now: datetime | None = None) -> int:
+        """Close MIS positions once an exchange is inside its square-off window.
+
+        Only for brokers we simulate; a real broker squares off on its own.
+        """
+        minutes = self.cfg.mis_square_off_minutes
+        if minutes is None or not isinstance(self.broker, PaperBroker):
+            return 0
+        now = now or self.clock.now()
+        due: list[str] = []
+        for pos in await self.broker.positions():
+            if pos.qty == 0 or pos.product is not ProductType.MIS:
+                continue
+            bounds = self.calendar.session_bounds(parse_symbol(pos.symbol).exchange, now.date())
+            if bounds and now >= bounds[1] - timedelta(minutes=minutes):
+                due.append(pos.symbol)
+        if not due:
+            return 0
+        await self.execution.cancel_where(
+            lambda o: o.product is ProductType.MIS and o.symbol in due, "MIS square-off"
+        )
+        closed = await self.broker.liquidate(
+            product=ProductType.MIS, symbols=due, reason="MIS square-off"
+        )
+        await self.drain_updates()
+        log.info("squared off %d MIS positions at %s", len(closed), now)
+        return len(closed)
 
     def clock_set(self, ts: datetime) -> None:
         setter = getattr(self.clock, "set", None)
@@ -269,6 +322,7 @@ class TradingEngine:
         while self.started:
             await asyncio.sleep(self.cfg.manage_interval_seconds)
             await self.execution.manage()
+            await self.square_off_due()
             await self.monitor.check_health()
 
     def status(self) -> dict[str, object]:
