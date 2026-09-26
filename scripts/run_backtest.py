@@ -7,8 +7,9 @@ Examples:
     python scripts/run_backtest.py --list
 
 Results land in data/backtests/<run_id>/ (summary.json plus trades, equity, fills
-and orders as CSV). No network or credentials are needed; lot sizes come from the
-cached Dhan instrument master when one exists.
+and orders as CSV). No credentials are needed. Lot sizes come from Dhan's public
+instrument master, downloaded on startup when today's copy is missing; equities
+default to one share, and a derivative that cannot be sized is an error.
 """
 
 from __future__ import annotations
@@ -23,7 +24,8 @@ from pathlib import Path
 from trading.agents.risk import RiskLimits
 from trading.backtest.runner import DEFAULT_OUTPUT, BacktestConfig, list_runs, run_backtest
 from trading.backtest.sim_broker import FixedSlippage, VolumeSlippage
-from trading.brokers.dhan_instruments import load_cached_symbol_map
+from trading.brokers.dhan_instruments import ensure_symbol_map
+from trading.brokers.lots import LotSizes, MissingLotSize
 from trading.brokers.symbols import UnknownSymbol
 from trading.core.clock import MarketCalendar
 from trading.core.config import get_settings
@@ -93,16 +95,22 @@ async def main(argv: list[str] | None = None) -> int:
         print("no strategies selected", file=sys.stderr)
         return 2
 
+    # lot sizes: the instrument master is downloaded if today's copy is missing;
+    # equities default to 1, a derivative that cannot be sized stops the run
+    symbols = sorted({s for st in strategies for s in st.symbols})
+    symbol_map = await ensure_symbol_map(settings.instruments_dir)
+    try:
+        LotSizes.from_symbol_map(symbol_map, symbols)
+    except MissingLotSize as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 2
     instruments = {}
-    symbol_map = load_cached_symbol_map(settings.instruments_dir)
-    if symbol_map is None:
-        log.warning("no cached instrument master: lot sizes default to 1")
-    else:
-        for symbol in {s for st in strategies for s in st.symbols}:
+    if symbol_map is not None:
+        for symbol in symbols:
             try:
                 instruments[symbol] = symbol_map.resolve(symbol)
             except UnknownSymbol:
-                log.warning("%s is not in the cached instrument master", symbol)
+                log.warning("%s is not in the instrument master; trading single shares", symbol)
 
     limits = RiskLimits()
     if args.max_position is not None:

@@ -17,11 +17,13 @@ direction the rules allow.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Protocol
 
 from trading.agents.base import Agent
 from trading.agents.portfolio import Portfolio
+from trading.brokers.lots import LotSizes
 from trading.brokers.symbols import contract_multiplier
 from trading.core.bus import MessageBus, Topics
 from trading.core.clock import Clock
@@ -64,7 +66,7 @@ class SignalAgent(Agent):
         portfolio: Portfolio,
         *,
         models: ModelProvider | None = None,
-        lot_size_for: dict[str, int] | None = None,
+        lot_size_for: LotSizes | Mapping[str, int] | None = None,
         clock: Clock | None = None,
     ) -> None:
         self.name = f"signal:{strategy.id}"
@@ -72,7 +74,8 @@ class SignalAgent(Agent):
         self.strategy = strategy
         self.portfolio = portfolio
         self.models = models
-        self.lot_sizes = lot_size_for or {}
+        self.lots = LotSizes.of(lot_size_for)
+        self.lots.require(strategy.symbols)  # a derivative with no known lot stops here
         self._pending: dict[str, str] = {}  # symbol -> intent id awaiting an outcome
         self._model_version: str | None = None
         self.signals_emitted = 0
@@ -215,7 +218,7 @@ class SignalAgent(Agent):
         s = self.strategy.sizing
         price = fv.bar.close
         mult = contract_multiplier(fv.symbol)
-        lot = max(1, self.lot_sizes.get(fv.symbol, 1))
+        lot = self.lots.get(fv.symbol)
         match s.mode:
             case SizingMode.FIXED_QTY:
                 qty = s.qty

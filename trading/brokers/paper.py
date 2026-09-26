@@ -30,6 +30,7 @@ from typing import TYPE_CHECKING, Protocol
 
 from trading.backtest.costs import DEFAULT_FEES, FeeSchedule, compute_fees
 from trading.brokers.base import Instrument, MarketData, NotConnected, UnknownOrder
+from trading.brokers.lots import LotSizes
 from trading.brokers.symbols import InstrumentKind, parse_symbol
 from trading.core.clock import Clock, SystemClock
 from trading.core.types import (
@@ -485,7 +486,9 @@ class PaperBroker:
         return price * (1 + order.side.sign * bps / 10_000)
 
     def _lot(self, symbol: str) -> int:
-        return max(1, int(self.cfg.lot_size_for(symbol))) if self.cfg.lot_size_for else 1
+        # the policy lives in LotSizes: NSE cash is 1, an unknown derivative is an error
+        resolve = self.cfg.lot_size_for or LotSizes()
+        return int(resolve(symbol))
 
     def _fillable_qty(self, order: Order, px: PriceCtx) -> int:
         """How much of the order this price can fill (volume participation cap)."""

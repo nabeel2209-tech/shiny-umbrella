@@ -292,7 +292,7 @@ async def test_mcx_sizing_uses_the_contract_multiplier():
         product="NRML",
         sizing={"mode": "fixed_notional", "notional": 3_000_000},
     )
-    bus, _, _, _, intents = await build(cfg)
+    bus, _, _, _, intents = await build(cfg, lots={"MCX:GOLDM-OCT26": 1})
     await bus.publish(
         Topics.features("MCX:GOLDM-OCT26"),
         fv(trend=0.02, close=150_000.0, symbol="MCX:GOLDM-OCT26"),
@@ -430,3 +430,10 @@ async def test_a_featureless_strategy_acts_before_warmup():
     bus, agent, _, _, intents = await build(cfg)
     await bus.publish(Topics.features(SYM), fv(warm=False))
     assert len(intents) == 1 and agent.skipped_cold == 0
+
+
+async def test_a_derivative_strategy_without_lot_sizes_fails_at_construction():
+    from trading.brokers.lots import MissingLotSize
+
+    with pytest.raises(MissingLotSize, match="NFO:NIFTY-OCT26"):
+        await build(strategy(symbols=["NFO:NIFTY-OCT26"], product="NRML"))

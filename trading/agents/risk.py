@@ -35,12 +35,14 @@ someone sends RESUME.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import date, timedelta
 
 from trading.agents.base import Agent
 from trading.agents.portfolio import Portfolio
 from trading.backtest.costs import DEFAULT_FEES, FeeSchedule, round_trip_cost_bps
+from trading.brokers.lots import LotSizes, MissingLotSize
 from trading.brokers.symbols import InstrumentKind, contract_multiplier, parse_symbol
 from trading.core.bus import MessageBus, Topics
 from trading.core.clock import Clock, MarketCalendar
@@ -108,14 +110,14 @@ class RiskAgent(Agent):
         calendar: MarketCalendar,
         limits: RiskLimits | None = None,
         *,
-        lot_size_for: dict[str, int] | None = None,
+        lot_size_for: LotSizes | Mapping[str, int] | None = None,
         clock: Clock | None = None,
     ) -> None:
         super().__init__(bus, clock=clock)
         self.portfolio = portfolio
         self.calendar = calendar
         self.limits = limits or RiskLimits()
-        self.lot_sizes = lot_size_for or {}
+        self.lots = LotSizes.of(lot_size_for)
         self.killed = False
         self.kill_reason = ""
         self.halted_day: date | None = None  # day the loss limit was hit
@@ -283,7 +285,10 @@ class RiskAgent(Agent):
             return RuleResult(False, "instrument", "equities trade as MIS or CNC")
         if parsed.is_derivative and intent.product is ProductType.CNC:
             return RuleResult(False, "instrument", "derivatives trade as MIS or NRML")
-        lot = max(1, self.lot_sizes.get(intent.symbol, 1))
+        try:
+            lot = self.lots.get(intent.symbol)
+        except MissingLotSize:
+            return RuleResult(False, "instrument", f"lot size unknown for {intent.symbol}")
         if qty % lot:
             return RuleResult(False, "instrument", f"quantity {qty} is not a multiple of lot {lot}")
         value = self._value(intent.symbol, qty, intent.reference_price)
@@ -403,5 +408,5 @@ class RiskAgent(Agent):
         unit = price * contract_multiplier(symbol)
         if unit <= 0:
             return 0
-        lot = max(1, self.lot_sizes.get(symbol, 1))
+        lot = self.lots.get(symbol)  # the instrument rule has already checked it exists
         return (int(value / unit) // lot) * lot

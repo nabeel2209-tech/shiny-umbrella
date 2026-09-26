@@ -39,6 +39,7 @@ from trading.agents.portfolio import Portfolio
 from trading.agents.risk import RiskAgent, RiskLimits
 from trading.agents.signal import ModelProvider, SignalAgent
 from trading.brokers.base import Broker, Instrument
+from trading.brokers.lots import LotSizes
 from trading.brokers.paper import PaperBroker
 from trading.brokers.symbols import contract_multiplier, parse_symbol
 from trading.core.bus import MessageBus, Topics
@@ -132,7 +133,9 @@ class TradingEngine:
         self.clock = clock or SystemClock()
         self.instruments = instruments or {}
         self.live = live
-        lots = {s: i.lot_size for s, i in self.instruments.items()}
+        lots = LotSizes.from_instruments(self.instruments)
+        lots.require(config.symbols)  # fail before anything starts, never guess a lot
+        self.lots = lots
 
         self.portfolio = Portfolio(
             starting_equity=config.starting_equity, multiplier_for=contract_multiplier
@@ -159,7 +162,7 @@ class TradingEngine:
             bus, self.portfolio, calendar, config.limits, lot_size_for=lots, clock=self.clock
         )
         self.execution = ExecutionAgent(
-            bus, broker, config.execution, instruments=self.instruments, clock=self.clock
+            bus, broker, config.execution, instruments=self.instruments, lots=lots, clock=self.clock
         )
         self.monitor = MonitorAgent(bus, self.portfolio, config.monitor, clock=self.clock)
         self._queue: asyncio.Queue[Order | Fill] | None = None

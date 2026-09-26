@@ -231,6 +231,34 @@ def _instrument_from_row(row, segment: str) -> tuple[Instrument | None, list[str
     return inst, aliases
 
 
+async def ensure_symbol_map(
+    cache_dir: Path | str = "data/instruments",
+    *,
+    download: bool = True,
+    http: httpx.AsyncClient | None = None,
+    today: date | None = None,
+) -> SymbolMap | None:
+    """The instrument master, downloaded on startup if today's copy is missing.
+
+    The file is public, so no credentials are needed. If the download fails the
+    newest older copy is used (lot sizes rarely change day to day); if there is no
+    copy at all, None - callers turn that into an error for any derivative.
+    """
+    today = today or datetime.now(IST).date()
+    master = DhanInstrumentMaster(cache_dir, http=http)
+    if master.cache_path(today).exists():
+        return build_symbol_map(pd.read_parquet(master.cache_path(today)), source=master.url)
+    if download:
+        try:
+            return await master.symbol_map(today=today)
+        except (httpx.HTTPError, OSError, ValueError) as e:
+            log.warning("instrument master download failed: %s", e)
+    stale = load_cached_symbol_map(cache_dir)
+    if stale is not None:
+        log.warning("using a stale instrument master: %s", stale.source)
+    return stale
+
+
 def load_cached_symbol_map(cache_dir: Path | str = "data/instruments") -> SymbolMap | None:
     """The newest cached instrument master, without touching the network.
 

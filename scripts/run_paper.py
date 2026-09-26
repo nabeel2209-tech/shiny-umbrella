@@ -27,6 +27,8 @@ from trading.agents.engine import EngineConfig, TradingEngine, confirm_live_trad
 from trading.agents.execution import ExecutionConfig
 from trading.agents.risk import RiskLimits
 from trading.brokers.base import Instrument
+from trading.brokers.dhan_instruments import ensure_symbol_map
+from trading.brokers.lots import LotSizes, MissingLotSize
 from trading.brokers.paper import PaperBroker, PaperConfig
 from trading.brokers.paper_store import PaperStore
 from trading.brokers.symbols import contract_multiplier
@@ -101,7 +103,19 @@ async def main(argv: list[str] | None = None) -> int:
     instruments: dict[str, Instrument] = {}
     data_source = None
 
-    if not args.replay:
+    if args.replay:
+        # no broker connection: size from the instrument master (downloaded if
+        # missing); a derivative that cannot be sized stops here
+        symbol_map = await ensure_symbol_map(settings.instruments_dir)
+        try:
+            LotSizes.from_symbol_map(symbol_map, symbols)
+        except MissingLotSize as e:
+            print(f"error: {e}", file=sys.stderr)
+            return 2
+        for sym in symbols:
+            if symbol_map is not None and sym in symbol_map:
+                instruments[sym] = symbol_map.resolve(sym)
+    else:
         from trading.brokers.dhan import DhanBroker, DhanConfig
 
         problems = settings.problems()

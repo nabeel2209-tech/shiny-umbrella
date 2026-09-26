@@ -31,6 +31,7 @@ from datetime import datetime, timedelta
 from trading.agents.base import Agent
 from trading.backtest.costs import compute_fees
 from trading.brokers.base import Broker, BrokerError, Instrument, OrderRouter
+from trading.brokers.lots import LotSizes
 from trading.brokers.symbols import (
     InstrumentKind,
     contract_multiplier,
@@ -144,12 +145,14 @@ class ExecutionAgent(Agent):
         config: ExecutionConfig | None = None,
         *,
         instruments: dict[str, Instrument] | None = None,
+        lots: LotSizes | None = None,
         clock: Clock | None = None,
     ) -> None:
         super().__init__(bus, clock=clock)
         self.broker = broker
         self.cfg = config or ExecutionConfig()
         self.instruments = instruments or {}
+        self.lots = lots or LotSizes.from_instruments(self.instruments)
         # the broker's orders-per-second cap is wall-clock: it means nothing in a
         # replay, where it would only put real sleeps into simulated time
         self.limiter = (
@@ -252,7 +255,7 @@ class ExecutionAgent(Agent):
     def plan_slices(self, symbol: str, qty: int) -> list[int]:
         """Split ``qty`` into child orders under the participation and freeze caps."""
         inst = self.instruments.get(symbol)
-        lot = max(1, inst.lot_size if inst else 1)
+        lot = self.lots.get(symbol)
         caps = []
         vols = self._volume.get(symbol, [])
         if vols and self.cfg.max_participation > 0:

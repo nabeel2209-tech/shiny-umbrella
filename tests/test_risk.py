@@ -26,6 +26,7 @@ from trading.core.types import (
 )
 
 SYM = "NSE:RELIANCE"
+GOLDM_LOT = {"MCX:GOLDM-OCT26": 1}  # Dhan lists MCX quantity in lots
 OPEN_TIME = datetime(2026, 9, 18, 10, 0, tzinfo=IST)
 
 
@@ -146,6 +147,7 @@ def test_market_hours_guard(calendar, portfolio):
         portfolio,
         late,
         RiskLimits(max_order_value=2_000_000, max_position_value=2_000_000),
+        lot_size_for=GOLDM_LOT,
     )
     assert check(agent)[1].rule == "market_hours"
     approval, _ = check(
@@ -291,7 +293,11 @@ def test_mis_cutoff_follows_each_exchange_close(calendar, portfolio):
     # MCX closes 23:55 in September (US DST), so 23:30 is still before its cutoff
     evening = SimClock(datetime(2026, 9, 18, 23, 30, tzinfo=IST))
     agent = make_agent(
-        calendar, portfolio, evening, RiskLimits(max_order_value=5e6, max_position_value=5e6)
+        calendar,
+        portfolio,
+        evening,
+        RiskLimits(max_order_value=5e6, max_position_value=5e6),
+        lot_size_for=GOLDM_LOT,
     )
     gold = intent(
         symbol="MCX:GOLDM-OCT26", product=ProductType.MIS, qty=1, reference_price=150_000.0
@@ -304,6 +310,7 @@ def test_mis_cutoff_follows_each_exchange_close(calendar, portfolio):
         portfolio,
         evening,
         RiskLimits(mis_entry_cutoff_minutes=None, max_order_value=5e6, max_position_value=5e6),
+        lot_size_for=GOLDM_LOT,
     )
     assert check(off, i=gold)[0] is not None
 
@@ -471,3 +478,12 @@ def test_approval_ttl(calendar, portfolio, clock):
     agent = make_agent(calendar, portfolio, clock, RiskLimits(approval_ttl_seconds=45))
     approval, _ = check(agent)
     assert approval.expires_at == clock.now() + timedelta(seconds=45)
+
+
+def test_a_derivative_with_no_known_lot_is_rejected_not_guessed(calendar, portfolio, clock):
+    agent = make_agent(calendar, portfolio, clock)  # no lot sizes at all
+    nifty = intent(symbol="NFO:NIFTY-OCT26", product=ProductType.NRML, reference_price=25_000.0)
+    _, rejection = check(agent, i=nifty)
+    assert rejection.rule == "instrument" and "lot size unknown" in rejection.reason
+    # a cash equity still defaults to single shares
+    assert check(agent, qty=7)[0].approved_qty == 7

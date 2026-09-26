@@ -53,6 +53,7 @@ from trading.backtest.metrics import (
 )
 from trading.backtest.sim_broker import FixedSlippage, SimBroker, SimConfig, SlippageModel
 from trading.brokers.base import Instrument
+from trading.brokers.lots import LotSizes
 from trading.brokers.symbols import parse_symbol
 from trading.core.bus import InMemoryBus
 from trading.core.clock import MarketCalendar, SimClock
@@ -372,15 +373,16 @@ class BacktestRunner:
             warm = list(warmup_bars or []) + [b for b in bars if b.ts.date() < cfg.start]
         window = self.order_by_completion(window)
 
+        lots = LotSizes.from_instruments(cfg.instruments)
+        lots.require({s for strategy in cfg.strategies for s in strategy.symbols})
         clock = SimClock(datetime.combine(cfg.start, dtime(0, 0), tzinfo=IST))
-        lots = {s: i.lot_size for s, i in cfg.instruments.items()}
         broker = SimBroker(
             SimConfig(
                 starting_cash=cfg.initial_cash,
                 slippage=cfg.slippage,
                 fee_schedule=cfg.fee_schedule,
                 max_participation=cfg.max_participation,
-                lot_size_for=(lambda s: lots.get(s, 1)) if lots else None,
+                lot_size_for=lots,
             ),
             clock=clock,
         )
