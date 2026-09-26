@@ -42,6 +42,17 @@ class Settings(BaseSettings):
     # market hours
     mcx_close: time = time(23, 30)
 
+    # dashboard / API
+    dashboard_user: str = "admin"
+    dashboard_password: SecretStr = SecretStr("")
+    session_secret: SecretStr = SecretStr("")
+    session_ttl_hours: int = 12
+    cookie_secure: bool = False  # set true behind HTTPS
+    api_host: str = "127.0.0.1"
+    api_port: int = 8000
+    strategies_dir: Path = Path("data/strategies")
+    state_dir: Path = Path("data/state")
+
     # feature flags
     feature_marketplace: bool = False
 

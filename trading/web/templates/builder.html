@@ -1,0 +1,115 @@
+{% extends "base.html" %}
+{% block title %}Strategy Builder{% endblock %}
+{% set s = strategy %}
+{% macro opt(value, current) %}<option value="{{ value }}"{% if value == current %} selected{% endif %}>{{ value }}</option>{% endmacro %}
+{% block content %}
+<h1>Strategy Builder</h1>
+{% if request.query_params.get('saved') %}<p class="notice" role="status">Saved.</p>{% endif %}
+{% if request.query_params.get('deleted') %}<p class="notice" role="status">Deleted {{ request.query_params.get('deleted') }} (a copy is kept in the trash folder).</p>{% endif %}
+
+<div class="split">
+<aside class="card side">
+  <h2>Your strategies</h2>
+  <ul class="plain">
+    {% for x in strategies %}<li><a href="/builder/{{ x.id }}"{% if s and editing and x.id == s.id %} aria-current="page"{% endif %}>{{ x.name or x.id }}</a> <span class="muted">{{ x.id }}</span></li>
+    {% else %}<li class="muted">None yet.</li>{% endfor %}
+  </ul>
+  <p><a class="btn" href="/builder">New strategy</a></p>
+  <h2>Start from a template</h2>
+  <ul class="plain">
+    {% for t in templates %}<li><a href="/builder?template={{ t.id }}">{{ t.name or t.id }}</a></li>{% endfor %}
+  </ul>
+</aside>
+
+<div class="main-col">
+<form id="builder" class="card stack" hx-post="/ui/builder/preview" hx-trigger="{{ 'load, ' if s else '' }}change, input delay:600ms" hx-target="#preview">
+  <input type="hidden" name="editing" value="{{ '1' if editing else '' }}">
+  <h2>{{ ('Edit ' ~ s.id) if editing else 'New strategy' }}</h2>
+  <div class="grid-2">
+    <label>Id <span class="hint">lowercase letters, digits, - and _</span>
+      <input name="id" value="{{ s.id if s else '' }}" required pattern="[a-z0-9_\-]{1,64}" {% if editing %}readonly{% endif %}></label>
+    <label>Name <input name="name" value="{{ s.name if s else '' }}"></label>
+    <label class="span-2">Symbols <span class="hint">canonical, space separated, e.g. NSE:RELIANCE NFO:NIFTY-OCT26 MCX:GOLDM-OCT26</span>
+      <input name="symbols" value="{{ s.symbols|join(' ') if s else '' }}" required></label>
+    <label>Bar interval <select name="interval">{% for i in intervals %}{{ opt(i, s.interval.value if s else '5m') }}{% endfor %}</select></label>
+    <label>Product <span class="hint">MIS intraday, CNC delivery, NRML carry</span>
+      <select name="product">{% for p in products %}{{ opt(p, s.product.value if s else 'MIS') }}{% endfor %}</select></label>
+    <label class="check"><input type="checkbox" name="enabled" value="1"{% if not s or s.enabled %} checked{% endif %}> Enabled</label>
+  </div>
+
+  {% for g in groups %}{% set r = rows[g] %}
+  <fieldset class="rules">
+    <legend>{{ group_titles[g] }}</legend>
+    {% if r.nested %}<p class="warn"><span class="icon" aria-hidden="true">&#9650;</span> This rule has nested groups or feature-to-feature comparisons the form cannot show. Edit it in YAML below; saving this form would drop them.</p>{% endif %}
+    <div class="row-head">
+      <label>Join <select name="{{ g }}_join">{{ opt('all', r.join) }}{{ opt('any', r.join) }}</select></label>
+      <label class="check"><input type="checkbox" name="{{ g }}_always" value="1"{% if r.always %} checked{% endif %}> Always (every bar)</label>
+    </div>
+    <div id="rows-{{ g }}" class="cond-rows">
+      {% for row in r.rows %}{% set group = g %}{% include "partials/condition_row.html" %}{% endfor %}
+    </div>
+    <button type="button" class="btn small" hx-get="/ui/builder/row?group={{ g }}" hx-target="#rows-{{ g }}" hx-swap="beforeend">Add condition</button>
+  </fieldset>
+  {% endfor %}
+
+  <fieldset>
+    <legend>Model (optional)</legend>
+    <div class="grid-3">
+      <label>Model <select name="model_name"><option value="">none (rules only)</option>{% for m in models %}{{ opt(m, s.model.name if s else '') }}{% endfor %}</select></label>
+      <label>Version <span class="hint">blank = follow the live version</span><input name="model_version" value="{{ s.model.version or '' if s else '' }}"></label>
+      <label>Minimum |score| <input name="model_min_abs_score" type="number" step="any" min="0" value="{{ s.model.min_abs_score if s else 0 }}"></label>
+    </div>
+  </fieldset>
+
+  <fieldset>
+    <legend>Edge and sizing</legend>
+    <div class="grid-3">
+      <label>Expected edge (bps) <span class="hint">rules only; must beat round-trip costs</span><input name="expected_edge_bps" type="number" step="any" min="0" value="{{ s.expected_edge_bps if s else 0 }}"></label>
+      <label>Payoff ratio <input name="payoff_ratio" type="number" step="any" min="0" value="{{ s.payoff_ratio if s else 1 }}"></label>
+      <label>Sizing <select name="sizing_mode">{% for m in sizing_modes %}{{ opt(m, s.sizing.mode.value if s else 'fixed_qty') }}{% endfor %}</select></label>
+      <label>Quantity <span class="hint">lots for MCX</span><input name="sizing_qty" type="number" min="1" value="{{ s.sizing.qty if s else 1 }}"></label>
+      <label>Notional (&#8377;) <input name="sizing_notional" type="number" step="any" min="1" value="{{ s.sizing.notional if s else 100000 }}"></label>
+      <label>Kelly fraction <input name="sizing_fraction" type="number" step="any" min="0" max="1" value="{{ s.sizing.fraction if s else 0.02 }}"></label>
+      <label>Max quantity <input name="sizing_max_qty" type="number" min="1" value="{{ s.sizing.max_qty or '' if s else '' }}"></label>
+    </div>
+  </fieldset>
+
+  <fieldset>
+    <legend>Execution</legend>
+    {% set ex = s.execution if s else None %}
+    <div class="grid-3">
+      <label>Urgency <select name="urgency">{% for u in urgencies %}{{ opt(u, ex.urgency.value if ex else 'NORMAL') }}{% endfor %}</select></label>
+      <label>Limit band (bps) <input name="limit_band_bps" type="number" step="any" min="0" value="{{ ex.limit_band_bps if ex else 10 }}"></label>
+      <label>Order TTL (s) <input name="ttl_seconds" type="number" min="1" value="{{ ex.ttl_seconds if ex else 300 }}"></label>
+      <label>Stop loss (%) <input name="stop_loss_pct" type="number" step="any" min="0" value="{{ (ex.stop_loss_pct * 100)|round(4) if ex and ex.stop_loss_pct else '' }}"></label>
+      <label>Take profit (%) <input name="take_profit_pct" type="number" step="any" min="0" value="{{ (ex.take_profit_pct * 100)|round(4) if ex and ex.take_profit_pct else '' }}"></label>
+      <label>Max holding (bars) <input name="max_holding_bars" type="number" min="1" value="{{ ex.max_holding_bars or '' if ex else '' }}"></label>
+    </div>
+  </fieldset>
+
+  <label>Notes <textarea name="notes" rows="2">{{ s.notes if s else '' }}</textarea></label>
+
+  <div class="actions">
+    <button type="button" class="btn primary" hx-post="/ui/builder/save">Save</button>
+    {% if editing %}<button type="button" class="btn danger-outline" hx-post="/ui/strategies/{{ s.id }}/delete" hx-confirm="Delete {{ s.id }}? A copy is kept in the trash folder.">Delete</button>{% endif %}
+    <span class="htmx-indicator muted">checking&hellip;</span>
+  </div>
+</form>
+
+<section class="card">
+  <h2>YAML</h2>
+  <div id="preview" aria-live="polite"></div>
+</section>
+
+<details class="card">
+  <summary>Edit as YAML (full schema: nested groups, feature-to-feature comparisons)</summary>
+  <form hx-post="/ui/builder/save-yaml" hx-target="#yaml-result" class="stack">
+    <label class="sr-only" for="yaml">Strategy YAML</label>
+    <textarea id="yaml" name="yaml" rows="22" spellcheck="false" class="mono">{{ s.to_yaml() if s else '' }}</textarea>
+    <div class="actions"><button class="btn primary" type="submit">Save YAML</button></div>
+    <div id="yaml-result" aria-live="polite"></div>
+  </form>
+</details>
+</div>
+</div>
+{% endblock %}

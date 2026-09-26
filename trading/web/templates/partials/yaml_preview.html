@@ -1,0 +1,9 @@
+{% if errors %}
+<div class="errors" role="alert">
+  <p><span class="icon" aria-hidden="true">&#10007;</span> <strong>Not valid yet:</strong></p>
+  <ul>{% for e in errors %}<li>{{ e }}</li>{% endfor %}</ul>
+</div>
+{% elif strategy %}
+<p class="ok"><span class="icon" aria-hidden="true">&#10003;</span> Valid. This is what will be saved:</p>
+<pre class="yaml">{{ strategy.to_yaml() }}</pre>
+{% endif %}

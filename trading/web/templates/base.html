@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en-IN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="htmx-config" content='{"includeIndicatorStyles": false, "allowEval": false, "allowScriptTags": false, "selfRequestsOnly": true, "responseHandling": [{"code": "204", "swap": false}, {"code": "[23]..", "swap": true}, {"code": "(409|422)", "swap": true, "error": false}, {"code": "[45]..", "swap": false, "error": true}]}'>
+  <title>{% block title %}Dashboard{% endblock %} &middot; Trading</title>
+  <link rel="stylesheet" href="/static/app.css">
+  <script src="/static/vendor/htmx.min.js" defer></script>
+  <script src="/static/app.js" defer></script>
+</head>
+<body{% if user %} hx-headers='{"X-CSRF-Token": "{{ csrf }}"}' data-signed-in{% endif %}>
+{% if user %}
+<header class="topbar">
+  <a class="brand" href="/">Trading</a>
+  <nav class="nav" aria-label="Main">
+    {% for href, label, live in nav %}
+    <a href="{{ href }}"{% if path.startswith(href) %} aria-current="page"{% endif %}{% if not live %} class="soon"{% endif %}>{{ label }}{% if not live %} <span class="tag">soon</span>{% endif %}</a>
+    {% endfor %}
+  </nav>
+  <div class="who">
+    <span class="ws-status" data-ws-status title="Live updates">offline</span>
+    <span>{{ user.username }}{% if user.is_admin %} (admin){% endif %}</span>
+    <form method="post" action="/logout">
+      <input type="hidden" name="csrf_token" value="{{ csrf }}">
+      <button class="link" type="submit">Sign out</button>
+    </form>
+  </div>
+</header>
+<div id="kill-banner" hx-get="/ui/control/banner" hx-trigger="kill-changed from:body" hx-swap="innerHTML">
+  {% include "partials/kill_banner.html" %}
+</div>
+{% endif %}
+<main class="page">
+{% block content %}{% endblock %}
+</main>
+</body>
+</html>

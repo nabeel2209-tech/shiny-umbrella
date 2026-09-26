@@ -32,6 +32,7 @@ Dashboard & API ──► Training pipeline ──► Model registry ──► S
 ```bash
 make setup          # uv venv + deps + copies .env.example to .env
 make check          # ruff + pytest
+make serve          # dashboard on http://127.0.0.1:8000 (set DASHBOARD_PASSWORD first)
 ```
 
 Requires Python 3.12 and [uv](https://github.com/astral-sh/uv). Secrets live only in
@@ -46,7 +47,7 @@ Requires Python 3.12 and [uv](https://github.com/astral-sh/uv). Secrets live onl
 | 3 | Trading engine (data / signal / risk / execution / monitor agents) | done |
 | 4 | Backtester | done |
 | 5 | Training pipeline, registry, promotion gate, nightly schedule | done |
-| 6 | FastAPI + dashboard | |
+| 6 | FastAPI + dashboard | done |
 | 7 | Hardening: docker compose, logging, alerts, runbook | |
 
 ## Phase 1 — what exists
@@ -287,3 +288,131 @@ newly promoted version, and back on rollback, without a restart (`test_registry.
 - Lot sizes: equities default to one share; a derivative with no known lot is an
   error everywhere (engine, backtest, training), and the instrument master is
   downloaded on startup when missing.
+
+## Phase 6 — what exists
+
+A FastAPI app serving a JSON API, a websocket of live events, and an HTMX dashboard
+(server-rendered HTML, one vendored script, no front-end build).
+
+| Module | Purpose |
+|--------|---------|
+| `trading/api/app.py` | App factory, security headers (strict CSP: no inline script or style, `frame-ancestors 'none'`, `no-store`), sign-in redirects, readable HTML error pages. |
+| `trading/api/auth.py` | Users (admin / user roles, multi-user ready), scrypt password hashes, HMAC-signed session tokens backed by a revocable session table, per-session CSRF tokens, login throttling. |
+| `trading/api/deps.py` | Who is calling: `Authorization: Bearer` for scripts, an HttpOnly SameSite=Lax cookie for the browser. Cookie-authenticated writes need the CSRF token (header or form field). |
+| `trading/api/routes/api.py` | The JSON API (list below). |
+| `trading/api/routes/pages.py` | Dashboard pages and the `/ui/...` fragments HTMX swaps in. |
+| `trading/api/ws.py` | `/ws/live`: orders, fills, signals, rejections, alerts and kill-switch events for the signed-in user. Cookie connections must come from our own Origin. |
+| `trading/api/engines.py` | One paper and one live engine per user, built from the same `TradingEngine` as `run_paper.py`; start / stop / flatten / account; the live-trading refusals. |
+| `trading/api/jobs.py` | Backtests as a background queue (SQLite-backed, one worker, survives restarts: queued jobs re-run, interrupted ones are marked failed). |
+| `trading/api/strategy_store.py` | Per-user strategy YAML files, validated on every write; delete moves to `.trash/`. |
+| `trading/api/events.py` | Event hub (per-user queues that drop the oldest event for a slow client), and the persisted kill switch. |
+| `trading/api/builder.py` | Strategy Builder form ⇄ strategy dict. |
+| `trading/api/charts.py`, `formatting.py` | Server-rendered SVG line charts (LTTB-decimated, crosshair data for hover); rupees in lakh/crore grouping, IST times. |
+| `trading/web/` | Jinja templates, `app.css` (light and dark), `app.js` (websocket feed, chart hover and keyboard, builder rows), `vendor/htmx.min.js` (see `VENDORED.md`). |
+| `scripts/serve.py` | Runs it: asks for LIVE at startup when `LIVE_TRADING=true`, refuses to start without a dashboard password (or `--dev`). |
+
+JSON API (all under `/api`, all need sign-in except `/healthz` and login):
+
+```
+POST /auth/login  POST /auth/logout  GET /auth/me  GET /features
+GET|POST /strategies  GET /strategies/templates  POST /strategies/validate
+GET|PUT|DELETE /strategies/{id}
+POST /backtests  GET /backtests  GET /backtests/{id}  GET /backtests/{id}/equity|trades
+GET /engines  POST /engines/{paper|live}/start|stop|flatten
+GET /accounts/{paper|live}  POST /accounts/paper/reset
+GET /control  POST /control/kill  POST /control/resume (admin)
+GET /models  GET /models/{name}  GET /models/{name}/{version}
+POST /models/{name}/rollback (admin)  POST /models/{name}/promote (admin, confirm)
+GET /marketplace|auto-trading|ai-strategies  → 501, only mounted when FEATURE_MARKETPLACE=true
+```
+
+Pages: Strategy Builder (form → YAML, or the YAML itself), Backtesting (run, then
+results: stat tiles, equity and drawdown charts, daily table, per-strategy and trade
+tables), Algo Trading (own Dhan account), Practise (paper account with fake cash),
+Models, How It Works. Marketplace, Auto Trading and AI Strategies are in the nav and
+say "coming soon": offering algos to others needs SEBI algo-provider registration.
+
+```bash
+# in .env: DASHBOARD_PASSWORD=... and SESSION_SECRET=$(python -c "import secrets;print(secrets.token_hex(32))")
+make serve
+# a script, without the browser:
+TOKEN=$(curl -s -X POST localhost:8000/api/auth/login -H 'content-type: application/json' \
+    -d '{"username":"admin","password":"..."}' | python -c "import json,sys;print(json.load(sys.stdin)['token'])")
+curl -s localhost:8000/api/engines -H "Authorization: Bearer $TOKEN"
+```
+
+Acceptance tests: every route above, both ways it can go
+(`tests/test_api_routes.py`, `test_api_auth.py`, `test_api_ws.py`, `test_pages.py`,
+`test_api_units.py`).
+
+### Safety rules as the dashboard applies them
+
+- **Live orders** need `LIVE_TRADING=true`, `BROKER=dhan`, LIVE typed at the
+  `scripts/serve.py` startup prompt, an admin, LIVE typed again on the Algo Trading
+  page, and a broker that really is Dhan. Any one missing means paper, with the
+  reason shown.
+- **Kill switch** on every page. Anyone signed in can engage it; only an admin can
+  release it. It halts running engines (exits included), blocks starts and flatten,
+  and survives a restart. An unreadable kill-switch file counts as engaged.
+- **Flatten** sends exit intents through the risk agent like any other order.
+- **Lot sizes**: a derivative with no known lot size is refused when an engine starts
+  and fails its backtest, with the reason.
+- A backtest over bars that are not in the archive fails and says to ingest them,
+  rather than reporting an empty result.
+
+### Manual walkthrough
+
+Run this after any change to the dashboard. Use a scratch data folder so it does not
+touch your paper account: `export DB_URL=sqlite:///data/walkthrough.db
+STRATEGIES_DIR=data/walkthrough/strategies STATE_DIR=data/walkthrough/state`.
+
+1. **Start.** `make serve` without `DASHBOARD_PASSWORD` refuses to start and says
+   why; `python -m scripts.serve --dev` prints a one-off admin password.
+2. **Sign in.** `/` redirects to `/login`. A wrong password shows an error; five
+   wrong ones lock the account for a minute. Sign in; the header shows "live" (the
+   websocket is connected).
+3. **Nav.** All nine items are there. Marketplace, Auto Trading and AI Strategies say
+   "coming soon" and mention SEBI.
+4. **Strategy Builder.** Start from the "Trend follow RELIANCE" template. The YAML
+   preview updates as you type. Change the id, add a condition, remove one, set a
+   1.5% stop loss (the YAML shows `stop_loss_pct: 0.015`). Type a feature value of
+   `abc`: the preview lists the error. Save; you land on the edit page with "Saved.".
+   Save a strategy with an existing id: "already exists". Open "Edit as YAML", change
+   the name, save. Delete a strategy; it disappears from the list.
+5. **Backtesting.** Pick the strategy and a window you have ingested
+   (`scripts/ingest_history.py`). The job appears as queued, then done, without
+   reloading. Open it: tiles, equity chart with the starting-capital line, drawdown
+   chart, daily table under "Table view", per-strategy and trade tables. Hover a
+   chart: crosshair and tooltip; Tab to it and use the arrow keys. Run one over a
+   window with no data: it fails with "ingest them first". Switch the OS to dark
+   mode: the page follows.
+6. **Practise.** Start the paper engine with your strategy (needs Dhan credentials
+   for market data). The panel shows running and refreshes itself; the activity feed
+   shows engine events as they happen (started, alerts, signals, orders, fills). Flatten: "sent N exit order(s)". Stop. Reset the paper
+   account: typing anything but `paper-<you>` is refused.
+7. **Kill switch.** Press it with a reason: the red banner appears on every page,
+   the activity feed logs it, starting an engine is refused. As a non-admin user the
+   banner says only an admin can release it. Release it as admin.
+8. **Algo Trading.** With `LIVE_TRADING=false` the page explains what is missing and
+   the start button is disabled. With `LIVE_TRADING=true` and `BROKER=dhan`, the
+   startup prompt must be answered LIVE, and the start form asks for LIVE again.
+   **Do this step only with a strategy sized to one share, and stop the engine
+   straight after.**
+9. **Models.** After `scripts/train.py fit ... --promote` twice, the model page shows
+   both versions, the gate decisions and the history; roll back as admin.
+10. **Sign out**, then check `/` redirects to sign-in again.
+
+### Design decisions
+
+- **Server-rendered HTML + HTMX, no front-end build.** Charts are SVG drawn on the
+  server; `app.js` only adds hover, the websocket feed, and builder rows. One chart
+  per measure (equity and drawdown are two charts, never a dual axis).
+- **CSP without `unsafe-inline`.** Everything is a file from this origin, and a
+  test fails any page that grows an inline script or style.
+- **Bearer tokens for scripts, cookies for the browser.** Only cookie requests need
+  the CSRF token, because only cookies are sent automatically by a browser.
+- **Per-user state.** Strategies, backtests, paper accounts and engines are keyed by
+  user, so adding users later needs no data migration. The live account and the
+  kill switch are platform-wide.
+- **One backtest worker.** Backtests run one at a time in a thread, so a long one
+  cannot starve the live engines' event loop.

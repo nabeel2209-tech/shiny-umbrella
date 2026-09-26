@@ -46,7 +46,12 @@ namespaces = false
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
-filterwarnings = ["error::RuntimeWarning"]
+filterwarnings = [
+    "error::RuntimeWarning",
+    # third-party test client noise (starlette's TestClient), not our code
+    "ignore:Using `httpx` with `starlette.testclient` is deprecated:UserWarning",
+    "ignore:The anyio.abc.BlockingPortal alias is deprecated:DeprecationWarning",
+]
 markers = [
     "integration: needs live network / credentials (skipped in CI)",
     "redis: needs a reachable Redis",
@@ -59,6 +64,10 @@ target-version = "py312"
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP", "SIM", "RUF"]
 ignore = ["RUF012"]
+
+[tool.ruff.lint.flake8-bugbear]
+# FastAPI declares dependencies and bodies as default values; that is the idiom
+extend-immutable-calls = ["fastapi.Depends", "fastapi.Body", "fastapi.Query", "fastapi.Form", "fastapi.File"]
 
 [tool.ruff.lint.per-file-ignores]
 "tests/*" = ["B011"]

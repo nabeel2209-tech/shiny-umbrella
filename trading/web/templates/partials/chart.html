@@ -1,0 +1,12 @@
+{# expects: chart (Chart), cid, title, sub #}
+<figure class="chart" data-points="{{ chart.points }}">
+  <figcaption>
+    <h3 id="{{ cid }}-title">{{ title }}</h3>
+    {% if sub %}<p class="sub">{{ sub }}</p>{% endif %}
+  </figcaption>
+  <div class="chart-plot" tabindex="0" aria-describedby="{{ cid }}-hint">
+    {{ chart.svg|safe }}
+    <div class="chart-tip" role="status" hidden></div>
+  </div>
+  <p id="{{ cid }}-hint" class="sr-only">Use the left and right arrow keys to read values.</p>
+</figure>

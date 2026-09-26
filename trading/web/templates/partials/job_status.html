@@ -1,0 +1,2 @@
+{% set s = j.status %}
+<span class="status {{ s }}"><span class="icon" aria-hidden="true">{% if s == 'done' %}&#10003;{% elif s == 'failed' %}&#10007;{% elif s == 'running' %}&#8635;{% else %}&#8230;{% endif %}</span> {{ s }}</span>

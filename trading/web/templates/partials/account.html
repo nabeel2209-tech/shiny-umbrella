@@ -1,0 +1,32 @@
+{% if message %}<p class="notice" role="status">{{ message }}</p>{% endif %}
+{% if account %}
+{% set f = account.funds %}
+<div class="tiles">
+  <div class="tile"><span class="label">Equity</span><span class="value">{{ f.equity|inr(0) }}</span></div>
+  <div class="tile"><span class="label">Free cash</span><span class="value">{{ f.cash|inr(0) }}</span></div>
+  <div class="tile"><span class="label">Realised</span><span class="value">{{ f.realised_pnl|inr }}</span></div>
+  <div class="tile"><span class="label">Unrealised</span><span class="value">{{ f.unrealised_pnl|inr }}</span></div>
+</div>
+<h3>Positions</h3>
+{% set open = account.positions|rejectattr('qty', 'equalto', 0)|list %}
+{% if open %}
+<div class="table-wrap"><table>
+  <thead><tr><th>Symbol</th><th>Product</th><th class="num">Qty</th><th class="num">Avg</th><th class="num">Last</th><th class="num">Net P&amp;L</th></tr></thead>
+  <tbody>{% for p in open %}<tr><td class="nowrap">{{ p.symbol }}</td><td>{{ p.product }}</td><td class="num">{{ p.qty }}</td><td class="num">{{ p.avg_price|num }}</td><td class="num">{{ p.last_price|num }}</td><td class="num">{{ p.net_pnl|inr }}</td></tr>{% endfor %}</tbody>
+</table></div>
+{% else %}<p class="muted">No open positions.</p>{% endif %}
+<h3>Orders</h3>
+{% if account.orders %}
+<div class="table-wrap"><table>
+  <thead><tr><th>Updated</th><th>Symbol</th><th>Side</th><th class="num">Qty</th><th class="num">Filled</th><th>Type</th><th class="num">Price</th><th>Status</th></tr></thead>
+  <tbody>{% for o in account.orders[:50] %}<tr><td class="nowrap">{{ o.updated_at|when }}</td><td class="nowrap">{{ o.symbol }}</td><td>{{ o.side }}</td><td class="num">{{ o.qty }}</td><td class="num">{{ o.filled_qty }}</td><td>{{ o.order_type }}</td><td class="num">{{ (o.avg_fill_price or o.price)|num }}</td><td>{{ o.status }}{% if o.status_message %} <span class="muted small">{{ o.status_message }}</span>{% endif %}</td></tr>{% endfor %}</tbody>
+</table></div>
+{% else %}<p class="muted">No orders.</p>{% endif %}
+<h3>Fills</h3>
+{% if account.fills %}
+<div class="table-wrap"><table>
+  <thead><tr><th>Time</th><th>Symbol</th><th>Side</th><th class="num">Qty</th><th class="num">Price</th><th class="num">Costs</th></tr></thead>
+  <tbody>{% for x in account.fills[:50] %}<tr><td class="nowrap">{{ x.ts|when }}</td><td class="nowrap">{{ x.symbol }}</td><td>{{ x.side }}</td><td class="num">{{ x.qty }}</td><td class="num">{{ x.price|num }}</td><td class="num">{{ x.fee_total|inr }}</td></tr>{% endfor %}</tbody>
+</table></div>
+{% else %}<p class="muted">No fills.</p>{% endif %}
+{% endif %}

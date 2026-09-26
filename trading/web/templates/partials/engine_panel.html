@@ -1,0 +1,48 @@
+<section id="engine-panel" class="card"{% if status.running %} hx-get="/ui/engines/{{ mode }}/panel" hx-trigger="every 5s" hx-swap="outerHTML"{% endif %}>
+  <h2>Engine</h2>
+  {% if error %}<p class="error" role="alert"><span class="icon" aria-hidden="true">&#10007;</span> {{ error }}</p>{% endif %}
+  {% if notice %}<p class="notice" role="status">{{ notice }}</p>{% endif %}
+  {% if status.running %}
+    {% set e = status.engine %}
+    <p><span class="status running"><span class="icon" aria-hidden="true">&#9679;</span> running</span> since {{ status.started_at|when }} &middot; {{ status.strategies|join(', ') }} &middot; broker {{ e.broker }}</p>
+    {% if status.error %}<p class="error"><span class="icon" aria-hidden="true">&#10007;</span> The engine loop stopped: {{ status.error }}</p>{% endif %}
+    {% if e.killed %}<p class="error"><span class="icon" aria-hidden="true">&#9632;</span> Kill switch engaged: no orders are sent.</p>{% endif %}
+    {% if e.portfolio %}
+    <div class="tiles">
+      <div class="tile"><span class="label">Equity</span><span class="value">{{ e.portfolio.equity|inr_compact }}</span></div>
+      <div class="tile"><span class="label">Today</span><span class="value">{{ e.portfolio.day_pnl|inr }}</span></div>
+      <div class="tile"><span class="label">Gross exposure</span><span class="value">{{ e.portfolio.gross_exposure|inr_compact }}</span></div>
+      <div class="tile"><span class="label">Open positions</span><span class="value">{{ e.portfolio.open_positions }}</span></div>
+    </div>
+    {% endif %}
+    <dl class="kv">
+      <dt>Bars</dt><dd>{{ e.bars }}</dd><dt>Intents</dt><dd>{{ e.intents }}</dd>
+      <dt>Approved</dt><dd>{{ e.approved }}</dd><dt>Rejected</dt><dd>{{ e.rejected }}</dd>
+      <dt>Orders</dt><dd>{{ e.orders }}</dd><dt>Fills</dt><dd>{{ e.fills }}</dd>
+    </dl>
+    {% if e.stale_agents %}<p class="warn"><span class="icon" aria-hidden="true">&#9650;</span> No heartbeat from: {{ e.stale_agents|join(', ') }}</p>{% endif %}
+    <div class="actions">
+      <button class="btn" hx-post="/ui/engines/{{ mode }}/flatten" hx-target="#engine-panel" hx-swap="outerHTML" hx-confirm="Close every open position now with aggressive limit orders?">Flatten all</button>
+      <button class="btn" hx-post="/ui/engines/{{ mode }}/stop" hx-target="#engine-panel" hx-swap="outerHTML" hx-confirm="Stop the engine? Open positions stay open and working orders stay at the broker.">Stop engine</button>
+    </div>
+  {% else %}
+    <p><span class="status stopped"><span class="icon" aria-hidden="true">&#9675;</span> stopped</span></p>
+    <form hx-post="/ui/engines/{{ mode }}/start" hx-target="#engine-panel" hx-swap="outerHTML" class="stack">
+      <fieldset>
+        <legend>Strategies to run</legend>
+        {% for s in strategies %}
+        <label class="check"><input type="checkbox" name="strategy_ids" value="{{ s.id }}"> {{ s.name or s.id }} <span class="muted">{{ s.symbols|join(', ') }} &middot; {{ s.interval.value }}</span></label>
+        {% else %}
+        <p class="muted">No strategies yet &mdash; <a href="/builder">build one</a>.</p>
+        {% endfor %}
+      </fieldset>
+      {% if mode == 'live' %}
+      <label>Type <code>LIVE</code> to send real orders <input name="confirm" autocomplete="off" required></label>
+      {% endif %}
+      <div class="actions">
+        <button class="btn primary" type="submit"{% if not strategies or (mode == 'live' and not status.live_allowed) %} disabled{% endif %}>Start {{ 'paper' if mode == 'paper' else 'live' }} engine</button>
+        <span class="htmx-indicator muted">connecting&hellip;</span>
+      </div>
+    </form>
+  {% endif %}
+</section>

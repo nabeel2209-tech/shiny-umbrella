@@ -1,0 +1,23 @@
+{% set active = jobs|selectattr('status', 'in', ['queued', 'running'])|list %}
+<section id="jobs" class="card"{% if active %} hx-get="/ui/backtests/jobs" hx-trigger="every 2s" hx-swap="outerHTML"{% endif %}>
+  <h2>Your backtests</h2>
+  {% if error %}<p class="error" role="alert"><span class="icon" aria-hidden="true">&#10007;</span> {{ error }}</p>{% endif %}
+  {% if jobs %}
+  <div class="table-wrap"><table>
+    <thead><tr><th>Name</th><th>Strategies</th><th>Window</th><th>Submitted</th><th>Status</th></tr></thead>
+    <tbody>
+    {% for j in jobs %}
+    <tr>
+      <td><a href="/backtests/{{ j.id }}">{{ j.params.name or j.id }}</a></td>
+      <td>{{ j.params.strategy_ids|join(', ') }}</td>
+      <td class="nowrap">{{ j.params.start }} &ndash; {{ j.params.end }}</td>
+      <td class="nowrap">{{ j.created_at|when }}</td>
+      <td>{% include "partials/job_status.html" %}{% if j.error %}<div class="error small">{{ j.error }}</div>{% endif %}</td>
+    </tr>
+    {% endfor %}
+    </tbody>
+  </table></div>
+  {% else %}
+  <p class="muted">Nothing run yet.</p>
+  {% endif %}
+</section>

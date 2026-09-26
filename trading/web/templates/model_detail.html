@@ -1,0 +1,48 @@
+{% extends "base.html" %}
+{% block title %}Model {{ name }}{% endblock %}
+{% block content %}
+<p><a href="/models">&larr; All models</a></p>
+<h1>{{ name }}</h1>
+<section class="card">
+  <h2>Live</h2>
+  {% if live %}
+  <p><strong>{{ live.version }}</strong> since {{ live.since|when }} &mdash; {{ live.reason }} ({{ live.actor }})</p>
+  {% if live.stack %}
+  <p class="muted">Rollback goes to {{ live.stack[0] }}{% if live.stack|length > 1 %}, then {{ live.stack[1:]|join(', ') }}{% endif %}.</p>
+  {% if user.is_admin %}
+  <form hx-post="/ui/models/{{ name }}/rollback" hx-confirm="Make {{ live.stack[0] }} live again? Running engines pick it up on their next bar." class="inline">
+    <label class="sr-only" for="rb-reason">Reason</label>
+    <input id="rb-reason" name="reason" placeholder="Reason" maxlength="200">
+    <button class="btn" type="submit">Roll back to {{ live.stack[0] }}</button>
+  </form>
+  {% endif %}
+  {% else %}<p class="muted">No earlier live version to roll back to.</p>{% endif %}
+  {% else %}
+  <p class="muted">No version is live. Strategies that follow this model make no model-driven trades.</p>
+  {% endif %}
+</section>
+
+<section class="card">
+  <h2>Versions</h2>
+  <div class="table-wrap"><table>
+    <thead><tr><th>Version</th><th>Kind</th><th>Trained to</th><th class="num">Walk-forward IC</th><th>Gate</th><th class="num">Holdout Sharpe</th><th class="num">Holdout trades</th><th>Why not</th></tr></thead>
+    <tbody>{% for v in versions %}{% set d = v.decision %}
+    <tr>
+      <td>{{ v.version }}{% if live and live.version == v.version %} <span class="tag">live</span>{% endif %}</td>
+      <td>{{ v.meta.kind }}</td>
+      <td class="nowrap">{{ v.meta.train_window.end|when }}</td>
+      <td class="num">{{ v.meta.cv.oos_ic|num(3) }}</td>
+      <td>{% if d is none %}<span class="muted">not gated</span>{% elif d.promote %}<span class="status done"><span class="icon" aria-hidden="true">&#10003;</span> passed</span>{% else %}<span class="status failed"><span class="icon" aria-hidden="true">&#10007;</span> refused</span>{% endif %}</td>
+      {% set c = (d.candidate or {}) if d else {} %}
+      <td class="num">{{ c.get('sharpe')|num if d else '' }}</td>
+      <td class="num">{{ c.get('trades', '') if d else '' }}</td>
+      <td class="small">{{ (d.failures or [])|join('; ') if d else '' }}</td>
+    </tr>{% endfor %}</tbody>
+  </table></div>
+</section>
+
+<section class="card">
+  <h2>History</h2>
+  <ol class="plain history">{% for h in history %}<li><span class="nowrap">{{ h.ts|when }}</span> &middot; {{ h.event }} {{ h.version }} &middot; {{ h.actor }}{% if h.reason %} &mdash; {{ h.reason }}{% endif %}</li>{% endfor %}</ol>
+</section>
+{% endblock %}

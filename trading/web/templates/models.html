@@ -1,0 +1,16 @@
+{% extends "base.html" %}
+{% block title %}Models{% endblock %}
+{% block content %}
+<h1>Models</h1>
+<p class="lede">Models are trained in a nightly batch job, scored on a holdout window they never saw, and made live only if they beat the current live model there. Nothing is learned in the live loop.</p>
+<section class="card">
+{% if models %}
+<div class="table-wrap"><table>
+  <thead><tr><th>Name</th><th>Live version</th><th class="num">Versions</th></tr></thead>
+  <tbody>{% for m in models %}<tr><td><a href="/models/{{ m.name }}">{{ m.name }}</a></td><td>{{ m.live or 'none' }}</td><td class="num">{{ m.versions }}</td></tr>{% endfor %}</tbody>
+</table></div>
+{% else %}
+<p class="muted">No models yet. Train one with <code>python -m scripts.train</code> (see the README).</p>
+{% endif %}
+</section>
+{% endblock %}

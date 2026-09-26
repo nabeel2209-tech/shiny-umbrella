@@ -1,0 +1,73 @@
+{% extends "base.html" %}
+{% block title %}Backtest {{ job.params.name or job.id }}{% endblock %}
+{% block content %}
+<p><a href="/backtests">&larr; All backtests</a></p>
+<h1>{{ job.params.name or ('Backtest ' ~ job.id) }}</h1>
+<p class="lede">{{ job.params.strategy_ids|join(', ') }} &middot; {{ job.params.start }} &ndash; {{ job.params.end }} &middot; starting cash {{ job.params.initial_cash|inr(0) }} &middot; {% set j = job %}{% include "partials/job_status.html" %}</p>
+
+<div id="result"{% if job.status in ('queued', 'running') %} hx-get="/backtests/{{ job.id }}" hx-trigger="every 3s" hx-select="#result" hx-swap="outerHTML"{% endif %}>
+{% if job.status in ('queued', 'running') %}
+  <p class="muted">{{ 'Waiting for a worker' if job.status == 'queued' else 'Running' }}&hellip; this page updates by itself.</p>
+{% elif job.status == 'failed' %}
+  <div class="banner critical" role="alert"><span class="icon" aria-hidden="true">&#10007;</span> <strong>Failed.</strong> <span>{{ job.error }}</span></div>
+{% elif summary %}
+  {% for w in m.warnings or [] %}
+  <div class="banner warning" role="note"><span class="icon" aria-hidden="true">&#9650;</span> <strong>Warning.</strong> <span>{{ w }}</span></div>
+  {% endfor %}
+
+  <div class="tiles">
+    <div class="tile"><span class="label">Net P&amp;L</span><span class="value">{{ m.net_pnl|inr }}</span><span class="sub">{{ m.total_return|signed_pct }} on starting cash</span></div>
+    <div class="tile"><span class="label">Sharpe</span><span class="value">{{ m.sharpe|num if m.sharpe_basis != 'none' else '&ndash;'|safe }}</span><span class="sub">{{ m.sharpe_basis }}, {{ m.sharpe_observations }} returns</span></div>
+    <div class="tile"><span class="label">Max drawdown</span><span class="value">{{ m.max_drawdown_pct|pct }}</span><span class="sub">{{ m.max_drawdown|inr(0) }}</span></div>
+    <div class="tile"><span class="label">Closed trades</span><span class="value">{{ m.trades }}</span><span class="sub">hit rate {{ m.hit_rate|pct(1) }}{% if m.open_trades %}, {{ m.open_trades }} open{% endif %}</span></div>
+    <div class="tile"><span class="label">Costs paid</span><span class="value">{{ m.fees.total|inr(0) }}</span><span class="sub">turnover {{ m.turnover|num }}&times; capital</span></div>
+    <div class="tile"><span class="label">Fill vs mid</span><span class="value">{{ m.achieved_vs_mid.mean_bps|num }} bps</span><span class="sub">{{ m.achieved_vs_mid.count }} fills</span></div>
+  </div>
+
+  {% if equity_chart %}
+  <section class="card">
+    {% with chart=equity_chart, cid='equity', title='Equity', sub='Account value at each bar close, in rupees. The dashed line is the starting capital.' %}{% include "partials/chart.html" %}{% endwith %}
+  </section>
+  <section class="card">
+    {% with chart=drawdown_chart, cid='drawdown', title='Drawdown', sub='How far equity sits below its running peak.' %}{% include "partials/chart.html" %}{% endwith %}
+    <details>
+      <summary>Table view: daily closes</summary>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Session</th><th class="num">Equity</th><th class="num">Drawdown</th></tr></thead>
+        <tbody>{% for r in daily %}<tr><td>{{ r.day.strftime('%d %b %Y') }}</td><td class="num">{{ r.equity|inr }}</td><td class="num">{{ r.drawdown|pct }}</td></tr>{% endfor %}</tbody>
+      </table></div>
+    </details>
+  </section>
+  {% endif %}
+
+  <section class="card">
+    <h2>By strategy</h2>
+    <div class="table-wrap"><table>
+      <thead><tr><th>Strategy</th><th class="num">Trades</th><th class="num">Hit rate</th><th class="num">Net P&amp;L</th><th class="num">Costs</th><th class="num">Profit factor</th></tr></thead>
+      <tbody>{% for sid, p in summary.per_strategy.items() %}
+      <tr><td>{{ sid }}</td><td class="num">{{ p.trades }}</td><td class="num">{{ p.hit_rate|pct(1) }}</td><td class="num">{{ p.net_pnl|inr }}</td><td class="num">{{ p.fees|inr }}</td><td class="num">{{ p.profit_factor|num }}</td></tr>
+      {% endfor %}</tbody>
+    </table></div>
+    {% if m.rejections %}<p class="muted">Risk agent rejections: {% for k, v in m.rejections.items() %}{{ k }} {{ v }}{% if not loop.last %}, {% endif %}{% endfor %}.</p>{% endif %}
+  </section>
+
+  <section class="card">
+    <h2>Trades{% if trades|length == 500 %} (first 500){% endif %}</h2>
+    {% if trades %}
+    <div class="table-wrap"><table>
+      <thead><tr><th>Strategy</th><th>Symbol</th><th>Side</th><th class="num">Qty</th><th>Entry</th><th class="num">Price</th><th>Exit</th><th class="num">Price</th><th class="num">Net P&amp;L</th><th class="num">Return</th><th>Held</th></tr></thead>
+      <tbody>{% for t in trades %}
+      <tr>
+        <td>{{ t.strategy_id }}</td><td class="nowrap">{{ t.symbol }}</td><td>{{ t.direction }}</td><td class="num">{{ t.qty }}</td>
+        <td class="nowrap">{{ t.entry_ts|when }}</td><td class="num">{{ t.entry_price|float|num }}</td>
+        <td class="nowrap">{{ t.exit_ts|when if t.exit_ts else 'open' }}</td><td class="num">{{ t.exit_price|float|num }}</td>
+        <td class="num">{{ t.net_pnl|float|inr }}</td><td class="num">{{ t.return_pct|float|signed_pct }}</td><td class="nowrap">{{ t.holding_seconds|duration }}</td>
+      </tr>
+      {% endfor %}</tbody>
+    </table></div>
+    {% else %}<p class="muted">No trades. Check the rejections above: a rule-only strategy needs an expected edge larger than its costs.</p>{% endif %}
+  </section>
+  <p class="muted small">Run {{ summary.run_id }} &middot; {{ summary.elapsed_seconds }} s &middot; files in <code>{{ summary.run_id }}/</code> under the backtests folder.</p>
+{% endif %}
+</div>
+{% endblock %}

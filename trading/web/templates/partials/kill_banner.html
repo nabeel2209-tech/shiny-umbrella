@@ -1,0 +1,21 @@
+{% if kill.killed %}
+<div class="banner critical" role="alert">
+  <span class="icon" aria-hidden="true">&#9632;</span>
+  <strong>Kill switch engaged.</strong>
+  <span>No orders are being sent, exits included. {{ kill.reason }} &mdash; {{ kill.by }}, {{ kill.at|when }}.</span>
+  {% if user and user.is_admin %}
+  <button class="btn" hx-post="/ui/control/resume" hx-target="#kill-banner" hx-confirm="Release the kill switch? Running engines will resume sending orders.">Release</button>
+  {% else %}
+  <span class="muted">Only an admin can release it.</span>
+  {% endif %}
+  {% if error %}<span class="error">{{ error }}</span>{% endif %}
+</div>
+{% else %}
+<div class="killbar">
+  <form hx-post="/ui/control/kill" hx-target="#kill-banner" hx-confirm="Engage the kill switch? Every engine stops sending orders immediately, exits included.">
+    <label class="sr-only" for="kill-reason">Reason</label>
+    <input id="kill-reason" name="reason" placeholder="Reason (optional)" maxlength="200">
+    <button class="btn danger" type="submit">Kill switch</button>
+  </form>
+</div>
+{% endif %}

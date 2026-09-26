@@ -1,0 +1,44 @@
+{% extends "base.html" %}
+{% block title %}Overview{% endblock %}
+{% block content %}
+<h1>Overview</h1>
+<div class="tiles">
+  {% for mode, st in engines.items() %}
+  <a class="tile" href="{{ '/practise' if mode == 'paper' else '/algo' }}">
+    <span class="label">{{ 'Practise (paper)' if mode == 'paper' else 'Algo trading (live)' }}</span>
+    <span class="value">{{ 'Running' if st.running else 'Stopped' }}</span>
+    {% if st.running %}<span class="sub">{{ st.strategies|join(', ') }}</span>{% endif %}
+  </a>
+  {% endfor %}
+  <a class="tile" href="/builder"><span class="label">Strategies</span><span class="value">{{ strategies|length }}</span></a>
+  <a class="tile" href="/models"><span class="label">Models</span><span class="value">{{ models|length }}</span></a>
+</div>
+
+<section class="card">
+  <h2>Recent backtests</h2>
+  {% if jobs %}
+  <div class="table-wrap"><table>
+    <thead><tr><th>Name</th><th>Strategies</th><th>Window</th><th>Status</th></tr></thead>
+    <tbody>
+    {% for j in jobs %}
+      <tr>
+        <td><a href="/backtests/{{ j.id }}">{{ j.params.name or j.id }}</a></td>
+        <td>{{ j.params.strategy_ids|join(', ') }}</td>
+        <td>{{ j.params.start }} &ndash; {{ j.params.end }}</td>
+        <td>{% include "partials/job_status.html" %}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table></div>
+  {% else %}
+  <p class="muted">No backtests yet. <a href="/backtests">Run one.</a></p>
+  {% endif %}
+</section>
+
+<section class="card">
+  <h2>Live models</h2>
+  {% if models %}
+  <ul class="plain">{% for name, live in models %}<li><a href="/models/{{ name }}">{{ name }}</a>: {{ live or 'no live version' }}</li>{% endfor %}</ul>
+  {% else %}<p class="muted">No models trained yet. See <code>scripts/train.py</code>.</p>{% endif %}
+</section>
+{% endblock %}

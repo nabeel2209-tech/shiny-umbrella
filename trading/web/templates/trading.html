@@ -1,0 +1,42 @@
+{% extends "base.html" %}
+{% set paper = mode == 'paper' %}
+{% block title %}{{ 'Practise' if paper else 'Algo Trading' }}{% endblock %}
+{% block content %}
+<h1>{{ 'Practise' if paper else 'Algo Trading' }}</h1>
+{% if paper %}
+<p class="lede">Runs your strategies on live market data against a paper account ({{ account_name }}) with {{ settings.paper_starting_cash|inr(0) }} of fake cash. Orders never reach an exchange.</p>
+{% else %}
+<p class="lede">Runs your strategies against your own Dhan account. <strong>These are real orders with real money.</strong></p>
+{% if not status.live_allowed %}
+<div class="banner warning" role="note"><span class="icon" aria-hidden="true">&#9650;</span> <strong>Live trading is off.</strong>
+  <span>It needs <code>LIVE_TRADING=true</code> and <code>BROKER=dhan</code> in <code>.env</code> with Dhan credentials, a restart, an admin account, and typing LIVE when you start. Until then use <a href="/practise">Practise</a>.</span></div>
+{% endif %}
+{% endif %}
+
+<div class="split wide-left">
+  <div class="main-col">
+    {% include "partials/engine_panel.html" %}
+    <section class="card">
+      <h2>Account</h2>
+      <div id="account" hx-get="/ui/accounts/{{ mode }}" hx-trigger="load, every 10s, trading-update from:body throttle:1s">
+        <p class="muted">Loading&hellip;</p>
+      </div>
+    </section>
+    {% if paper %}
+    <details class="card">
+      <summary>Reset the paper account</summary>
+      <form hx-post="/ui/accounts/paper/reset" hx-target="#account" class="stack">
+        <p>Wipes positions, orders and fills and restores {{ settings.paper_starting_cash|inr(0) }}. Stop the engine first.</p>
+        <label>Type <code>{{ account_name }}</code> to confirm <input name="confirm" autocomplete="off" required></label>
+        <div class="actions"><button class="btn danger-outline" type="submit">Reset paper account</button></div>
+      </form>
+    </details>
+    {% endif %}
+  </div>
+  <section class="card side">
+    <h2>Activity</h2>
+    <p class="muted small">Signals, orders, fills and alerts as they happen.</p>
+    <ol class="feed" data-feed="{{ mode }}" aria-live="polite"></ol>
+  </section>
+</div>
+{% endblock %}

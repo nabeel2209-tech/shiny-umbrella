@@ -1,0 +1,12 @@
+<div class="cond-row">
+  <select name="{{ group }}_feature" aria-label="Feature">
+    <option value="">feature&hellip;</option>
+    {% for f in features %}<option{% if f == row.feature %} selected{% endif %}>{{ f }}</option>{% endfor %}
+    {% if row.feature and row.feature not in features %}<option selected>{{ row.feature }}</option>{% endif %}
+  </select>
+  <select name="{{ group }}_op" aria-label="Comparison">
+    {% for o in ops %}<option value="{{ o }}"{% if o == row.op %} selected{% endif %}>{{ OP_LABELS[o] }}</option>{% endfor %}
+  </select>
+  <input name="{{ group }}_value" type="number" step="any" value="{{ row.value }}" aria-label="Value">
+  <button type="button" class="btn icon" data-remove-row aria-label="Remove condition">&times;</button>
+</div>

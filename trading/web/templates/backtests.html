@@ -1,0 +1,35 @@
+{% extends "base.html" %}
+{% block title %}Backtesting{% endblock %}
+{% block content %}
+<h1>Backtesting</h1>
+<p class="lede">Replays archived bars through the same agents that trade live (data &rarr; signal &rarr; risk &rarr; execution), with a simulated broker that fills on the next bar and charges Indian costs.</p>
+
+<form class="card stack" hx-post="/ui/backtests" hx-target="#jobs" hx-swap="outerHTML">
+  <h2>New backtest</h2>
+  <fieldset>
+    <legend>Strategies</legend>
+    {% for s in strategies %}
+    <label class="check"><input type="checkbox" name="strategy_ids" value="{{ s.id }}"> {{ s.name or s.id }} <span class="muted">{{ s.symbols|join(', ') }} &middot; {{ s.interval.value }}</span></label>
+    {% else %}
+    <p class="muted">No strategies yet &mdash; <a href="/builder">build one</a> first.</p>
+    {% endfor %}
+  </fieldset>
+  <div class="grid-3">
+    <label>From <input type="date" name="start" value="{{ default_start }}" required></label>
+    <label>To <input type="date" name="end" value="{{ default_end }}" required></label>
+    <label>Name <input name="name" maxlength="80" placeholder="optional"></label>
+    <label>Starting cash (&#8377;) <input type="number" name="initial_cash" value="1000000" min="1" step="any"></label>
+    <label>Slippage (bps) <input type="number" name="slippage_bps" value="2" min="0" step="any"></label>
+    <label>Max share of bar volume (%) <input type="number" name="participation" min="0" max="100" step="any" placeholder="no cap"></label>
+  </div>
+  <label class="check"><input type="checkbox" name="impact" value="1"> Square-root market impact on fills</label>
+  <label class="check"><input type="checkbox" name="liquidate" value="1" checked> Close open positions at the end</label>
+  <div class="actions">
+    <button class="btn primary" type="submit"{% if not strategies %} disabled{% endif %}>Run backtest</button>
+    <span class="htmx-indicator muted">queuing&hellip;</span>
+  </div>
+</form>
+
+{% set error = None %}
+{% include "partials/jobs.html" %}
+{% endblock %}

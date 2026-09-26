@@ -29,3 +29,6 @@ data/instruments/
 .idea/
 .vscode/
 data/reports/
+data/strategies/
+data/state/
+data/walkthrough/

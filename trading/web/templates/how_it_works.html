@@ -1,0 +1,44 @@
+{% extends "base.html" %}
+{% block title %}How It Works{% endblock %}
+{% block content %}
+<h1>How it works</h1>
+<p class="lede">One engine, three ways to run it: over history (Backtesting), on live data with fake money (Practise), and on live data with your Dhan account (Algo Trading). The code path is the same in all three.</p>
+
+<section class="card prose">
+  <h2>The trading engine</h2>
+  <ol>
+    <li><strong>Data agent.</strong> Turns the broker's tick feed into bars (1, 5, 15 minute, hourly, daily) on exchange session boundaries, and computes the features every strategy and model reads. The exact same feature code is used to train models, so a model sees in live trading what it saw in training.</li>
+    <li><strong>Signal agents.</strong> One per strategy. Each checks its rules (and, if it has one, asks its model for a prediction) on every completed bar and emits an order <em>intent</em>: what it would like to buy or sell, and why.</li>
+    <li><strong>Risk agent.</strong> Every intent passes here, no exceptions. It checks the kill switch, market hours, the instrument, the daily loss limit, the intraday cut-off, that the expected edge beats the round-trip costs, position and exposure limits, and sizes the trade. Approved intents get a signed approval.</li>
+    <li><strong>Execution agent.</strong> Refuses anything without a risk approval. Prices orders as limits (never raw market orders on options), slices large ones, chases or cancels unfilled ones, and places protective stops. Every order carries our own id, so after a reconnect it checks the broker's order book before placing anything again.</li>
+    <li><strong>Monitor.</strong> Watches heartbeats, rejections and slippage, raises alerts, and owns the kill switch.</li>
+  </ol>
+</section>
+
+<section class="card prose">
+  <h2>Models</h2>
+  <p>Models are optional. They are trained offline in a nightly batch job on archived bars, with walk-forward splits (never shuffled across time) and a gap between training and test data as long as the prediction horizon. Labels are returns <em>after</em> Indian trading costs. A new model goes live only if it beats the current one on a recent window neither has seen; rolling back is one click on the Models page. Nothing is learned tick by tick in the live loop.</p>
+</section>
+
+<section class="card prose">
+  <h2>Safety rules</h2>
+  <ul>
+    <li>Paper is the default. Real orders need <code>LIVE_TRADING=true</code>, the Dhan broker, an admin, and typing LIVE when starting.</li>
+    <li>The kill switch (top of every page) stops every engine from sending orders, exits included. Anyone can press it; only an admin can release it.</li>
+    <li>Intraday (MIS) positions are squared off before the exchange does it for you.</li>
+    <li>Times are Indian Standard Time throughout. Symbols are written the same way everywhere, e.g. <code>NSE:RELIANCE</code>, <code>NFO:NIFTY-OCT26</code>, <code>MCX:GOLDM-OCT26</code>.</li>
+    <li>Lot sizes for futures and options come from Dhan's instrument master. If it cannot be loaded, derivatives are refused rather than guessed.</li>
+  </ul>
+</section>
+
+<section class="card prose">
+  <h2>A sensible order of work</h2>
+  <ol>
+    <li>Build a strategy, or start from a template.</li>
+    <li>Backtest it over a few months. Look at costs and the drawdown chart as much as at the P&amp;L.</li>
+    <li>Run it in Practise for at least a couple of weeks and compare with the backtest.</li>
+    <li>Only then consider Algo Trading, with small size.</li>
+  </ol>
+  <p class="muted">Nothing on this site is investment advice. Past and simulated performance does not predict future results.</p>
+</section>
+{% endblock %}
