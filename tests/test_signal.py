@@ -90,7 +90,7 @@ class StubModels:
     def live_version(self, name: str) -> str | None:
         return self.version
 
-    def predict(self, name, version, features):
+    def predict(self, name, version, features, symbol=None):
         self.calls.append((name, version))
         if self.prediction is None:
             return None
@@ -99,6 +99,7 @@ class StubModels:
             version=version or self.version,
             prob=self.prediction.prob,
             expected_edge_bps=self.prediction.expected_edge_bps,
+            horizon=self.prediction.horizon,
         )
 
 
@@ -437,3 +438,53 @@ async def test_a_derivative_strategy_without_lot_sizes_fails_at_construction():
 
     with pytest.raises(MissingLotSize, match="NFO:NIFTY-OCT26"):
         await build(strategy(symbols=["NFO:NIFTY-OCT26"], product="NRML"))
+
+
+async def test_a_model_position_is_held_for_the_models_horizon():
+    """Trained to predict 3 bars ahead, so it exits on the third bar, not at a flip."""
+    portfolio = Portfolio(starting_equity=1_000_000.0, multiplier_for=contract_multiplier)
+    models = StubModels(ModelPrediction(score=0.9, version="v1", horizon=3))
+    bus, _, _, _, intents = await build(
+        strategy(rules={}, model={"name": "m"}), models=models, portfolio=portfolio
+    )
+    await bus.publish(Topics.features(SYM), fv(trend=0.0))
+    entry = Fill(
+        order_id="o",
+        symbol=SYM,
+        side=Side.BUY,
+        qty=10,
+        price=2500.0,
+        ts=TS,
+        product=ProductType.MIS,
+    )
+    portfolio.apply_fill(entry)
+    await bus.publish(Topics.FILLS, entry)
+    for _ in range(2):  # still bullish, within the horizon: hold
+        await bus.publish(Topics.features(SYM), fv(trend=0.0))
+    assert len(intents) == 1
+    await bus.publish(Topics.features(SYM), fv(trend=0.0))  # third bar held
+    assert (
+        len(intents) == 2 and intents[1].side is Side.SELL and intents[1].meta["reason"] == "time:3"
+    )
+
+
+async def test_max_holding_bars_applies_to_rule_strategies_too():
+    portfolio = Portfolio(starting_equity=1_000_000.0, multiplier_for=contract_multiplier)
+    cfg = strategy(execution={"urgency": "PASSIVE", "max_holding_bars": 2})
+    bus, _, _, _, intents = await build(cfg, portfolio=portfolio)
+    await bus.publish(Topics.features(SYM), fv(trend=0.02))
+    entry = Fill(
+        order_id="o",
+        symbol=SYM,
+        side=Side.BUY,
+        qty=10,
+        price=2500.0,
+        ts=TS,
+        product=ProductType.MIS,
+    )
+    portfolio.apply_fill(entry)
+    await bus.publish(Topics.FILLS, entry)
+    await bus.publish(Topics.features(SYM), fv(trend=0.02))
+    assert len(intents) == 1
+    await bus.publish(Topics.features(SYM), fv(trend=0.02))
+    assert intents[-1].meta["reason"] == "time:2"

@@ -31,6 +31,7 @@ import logging
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
+from typing import TYPE_CHECKING
 
 from trading.agents.data import DataAgent, DataAgentConfig
 from trading.agents.execution import ExecutionAgent, ExecutionConfig
@@ -48,6 +49,9 @@ from trading.core.config import Settings
 from trading.core.types import Bar, Fill, Interval, Order, ProductType
 from trading.features.features import DEFAULT_SPEC, FeatureSpec
 from trading.strategies.schema import StrategyConfig
+
+if TYPE_CHECKING:
+    from trading.training.signal_log import SignalLog
 
 log = logging.getLogger(__name__)
 
@@ -123,6 +127,7 @@ class TradingEngine:
         *,
         instruments: dict[str, Instrument] | None = None,
         models: ModelProvider | None = None,
+        signal_log: SignalLog | None = None,
         clock: Clock | None = None,
         live: bool = False,
     ) -> None:
@@ -165,6 +170,11 @@ class TradingEngine:
             bus, broker, config.execution, instruments=self.instruments, lots=lots, clock=self.clock
         )
         self.monitor = MonitorAgent(bus, self.portfolio, config.monitor, clock=self.clock)
+        self.signal_logger = None
+        if signal_log is not None:
+            from trading.training.signal_log import SignalLogger
+
+            self.signal_logger = SignalLogger(bus, signal_log, clock=self.clock)
         self._queue: asyncio.Queue[Order | Fill] | None = None
         self._tasks: list[asyncio.Task[None]] = []
         self.started = False
@@ -173,7 +183,8 @@ class TradingEngine:
     def agents(self) -> list[object]:
         # execution subscribes to intents before risk does, so on an ordered bus its
         # cache is populated in time to cross-check the approval it will receive
-        return [self.data, *self.signals, self.execution, self.risk, self.monitor]
+        agents = [self.data, *self.signals, self.execution, self.risk, self.monitor]
+        return [*agents, self.signal_logger] if self.signal_logger else agents
 
     # ------------------------------------------------------------------ lifecycle
     async def start(self, *, reconcile: bool = True) -> None:

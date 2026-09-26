@@ -42,6 +42,7 @@ from trading.agents.data import resample_bars
 from trading.agents.engine import EngineConfig, TradingEngine
 from trading.agents.execution import ExecutionConfig
 from trading.agents.risk import RiskLimits
+from trading.agents.signal import ModelProvider
 from trading.backtest.costs import DEFAULT_FEES, FeeSchedule
 from trading.backtest.metrics import (
     Trade,
@@ -202,6 +203,7 @@ class BacktestResult:
         ]
         if m["rejections"]:
             lines.append(f"  rejections     {m['rejections']}")
+        lines.extend(f"  WARNING        {w}" for w in m.get("warnings", []))
         return "\n".join(lines)
 
 
@@ -296,9 +298,42 @@ def list_runs(root: Path | str = DEFAULT_OUTPUT) -> list[dict[str, Any]]:
 
 
 class BacktestRunner:
-    def __init__(self, calendar: MarketCalendar, archive: Archive | None = None) -> None:
+    def __init__(
+        self,
+        calendar: MarketCalendar,
+        archive: Archive | None = None,
+        *,
+        models: ModelProvider | None = None,
+    ) -> None:
         self.calendar = calendar
         self.archive = archive
+        self.models = models
+
+    def in_sample_warnings(self, cfg: BacktestConfig) -> list[str]:
+        """A model scored on the window it was trained on proves nothing."""
+        out: list[str] = []
+        metadata = getattr(self.models, "metadata", None)
+        live_version = getattr(self.models, "live_version", None)
+        if metadata is None or live_version is None:
+            return out
+        for strategy in cfg.strategies:
+            ref = strategy.model
+            if not ref.enabled:
+                continue
+            assert ref.name is not None
+            version = ref.version or live_version(ref.name)
+            if version is None:
+                out.append(
+                    f"{strategy.id}: model {ref.name} has no live version - it will not trade"
+                )
+                continue
+            end = metadata(ref.name, version)["model"]["train_window"]["end"]
+            if end and date.fromisoformat(end[:10]) >= cfg.start:
+                out.append(
+                    f"{strategy.id}: {ref.name} {version} was trained on data up to {end[:10]}, "
+                    f"inside this backtest ({cfg.start}..) - results are in-sample"
+                )
+        return out
 
     # ------------------------------------------------------------------ data
     def warmup_start(self, symbol: str, interval: Interval, start: date, spec: FeatureSpec) -> date:
@@ -405,9 +440,12 @@ class BacktestRunner:
                 mis_square_off_minutes=cfg.mis_square_off_minutes,
             ),
             instruments=cfg.instruments,
+            models=self.models,
             clock=clock,
             live=False,
         )
+        for warning in self.in_sample_warnings(cfg):
+            log.warning(warning)
         await engine.start(reconcile=False)
         engine.data.prime(sorted(warm, key=lambda b: (b.ts, b.symbol)))
         if cfg.precompute_features:
@@ -480,6 +518,7 @@ class BacktestRunner:
             "exposure": (
                 round(float((equity["gross_exposure"] > 0).mean()), 4) if not equity.empty else 0.0
             ),
+            "warnings": self.in_sample_warnings(cfg),
         }
         per_strategy = {}
         for strategy in cfg.strategies:
@@ -511,10 +550,11 @@ async def run_backtest(
     *,
     archive: Archive | None = None,
     bars: Sequence[Bar] | None = None,
+    models: ModelProvider | None = None,
     output: Path | str | None = DEFAULT_OUTPUT,
 ) -> BacktestResult:
     """Run and (unless ``output`` is None) save a backtest."""
-    result = await BacktestRunner(calendar, archive).run(cfg, bars=bars)
+    result = await BacktestRunner(calendar, archive, models=models).run(cfg, bars=bars)
     if output is not None:
         result.save(output)
     return result

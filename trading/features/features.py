@@ -134,6 +134,16 @@ def _true_range(df: pd.DataFrame) -> pd.Series:
     ).max(axis=1)
 
 
+def atr_pct(bars: pd.DataFrame, window: int) -> pd.Series:
+    """Average true range over ``window`` bars as a fraction of the close (Cutler).
+
+    Public because triple-barrier labels size their barriers with it - one ATR
+    implementation for features and labels alike.
+    """
+    atr = _rolling(_true_range(bars), window).mean()
+    return atr / (bars["close"].astype(float) + EPS)
+
+
 def _session(ts: pd.Series) -> pd.Series:
     return ts.dt.date
 
@@ -170,8 +180,7 @@ def compute_features(
 
     out[f"rsi_{spec.rsi}"] = _rsi(close, spec.rsi)
 
-    atr = _rolling(_true_range(df), spec.atr).mean()
-    out[f"atr_pct_{spec.atr}"] = atr / (close + EPS)
+    out[f"atr_pct_{spec.atr}"] = atr_pct(df, spec.atr)
 
     out[f"vol_{spec.vol}"] = _rolling(out["ret_1"], spec.vol).std()
 

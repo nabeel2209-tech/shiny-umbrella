@@ -170,6 +170,9 @@ class ExecutionPrefs(BaseModel):
     limit_band_bps: float = Field(default=10.0, ge=0)
     ttl_seconds: int = Field(default=300, gt=0)
     stop_loss_pct: float | None = Field(default=None, gt=0)  # bracket stop on fill
+    # exit after this many bars in the position; a model strategy defaults to the
+    # model's label horizon, so it is traded over the span it was trained to predict
+    max_holding_bars: int | None = Field(default=None, gt=0)
     take_profit_pct: float | None = Field(default=None, gt=0)
 
 

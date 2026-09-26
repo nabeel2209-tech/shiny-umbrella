@@ -30,6 +30,7 @@ class Settings(BaseSettings):
     redis_url: str | None = None
     db_url: str = "sqlite:///data/state.db"
     archive_dir: Path = Path("data/archive")
+    models_dir: Path = Path("data/models")
     instruments_dir: Path = Path("data/instruments")
     holidays_file: Path = Path("data/holidays/holidays.json")
     corporate_actions_file: Path = Path("data/corporate_actions.json")

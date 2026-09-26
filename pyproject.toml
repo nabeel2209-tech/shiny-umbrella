@@ -38,6 +38,10 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 include = ["trading*"]
+# Without this, setuptools treats directories lacking __init__.py (templates,
+# example YAML) as PEP 420 namespaces and the editable install then imports
+# `trading` itself as a namespace in script mode - trading/__init__.py never runs.
+namespaces = false
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

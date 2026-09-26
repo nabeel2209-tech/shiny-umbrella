@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import math
 from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import date, datetime
 
+import pandas as pd
 import pytest
 
 from trading.core.clock import DEFAULT_HOLIDAYS_FILE, MarketCalendar, SimClock
@@ -124,3 +126,72 @@ def bars_from_prices(calendar: MarketCalendar) -> Callable[..., list[Bar]]:
         return make_bars(calendar, prices, **kw)  # type: ignore[arg-type]
 
     return _make
+
+
+# --------------------------------------------------------------------------- training fixtures
+# Trained once per session: the planted-signal and random-walk datasets and models
+# shared by the training, evaluation, registry, promotion and schedule tests.
+
+PLANTED_SYMBOL = "NSE:PLANTED"
+PLANTED_SESSIONS = 30
+HOLDOUT_SESSIONS = 8
+PLANTED_HORIZON = 10
+
+
+@dataclass
+class PlantedData:
+    frame: pd.DataFrame
+    dataset: object
+    train: object
+    holdout: object
+    holdout_start: datetime
+
+
+def _planted(calendar: MarketCalendar, *, kappa: float, seed: int) -> PlantedData:
+    from trading.training.dataset import build_dataset
+    from trading.training.labels import LabelSpec
+    from trading.training.splits import holdout_split
+
+    from .planted import planted_frame
+
+    frame = planted_frame(calendar, date(2026, 6, 1), PLANTED_SESSIONS, kappa=kappa, seed=seed)
+    ds = build_dataset(
+        {PLANTED_SYMBOL: frame}, Interval.M1, label=LabelSpec(horizon=PLANTED_HORIZON)
+    )
+    per_session = len(calendar.session_bars("NSE", date(2026, 6, 1), Interval.M1))
+    train, held = holdout_split(
+        ds.timestamps, holdout=HOLDOUT_SESSIONS * per_session, purge=PLANTED_HORIZON
+    )
+    holdout = ds.take(held)
+    return PlantedData(frame, ds, ds.take(train), holdout, holdout.meta["ts"].min().to_pydatetime())
+
+
+@pytest.fixture(scope="session")
+def planted_data(calendar: MarketCalendar) -> PlantedData:
+    return _planted(calendar, kappa=0.08, seed=1)
+
+
+@pytest.fixture(scope="session")
+def noise_data(calendar: MarketCalendar) -> PlantedData:
+    return _planted(calendar, kappa=0.0, seed=2)
+
+
+@pytest.fixture(scope="session")
+def planted_ridge(planted_data: PlantedData):
+    from trading.training.train import ModelKind, TrainConfig, fit_model
+
+    return fit_model(planted_data.train, TrainConfig(kind=ModelKind.RIDGE))
+
+
+@pytest.fixture(scope="session")
+def planted_lgbm(planted_data: PlantedData):
+    from trading.training.train import ModelKind, TrainConfig, fit_model
+
+    return fit_model(planted_data.train, TrainConfig(kind=ModelKind.LIGHTGBM))
+
+
+@pytest.fixture(scope="session")
+def noise_lgbm(noise_data: PlantedData):
+    from trading.training.train import ModelKind, TrainConfig, fit_model
+
+    return fit_model(noise_data.train, TrainConfig(kind=ModelKind.LIGHTGBM))

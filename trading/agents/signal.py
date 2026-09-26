@@ -46,6 +46,8 @@ class ModelPrediction:
     version: str
     prob: float | None = None  # p(win), for Kelly sizing
     expected_edge_bps: float | None = None
+    payoff_ratio: float | None = None  # b for Kelly, from the model's validation
+    horizon: int | None = None  # bars the prediction is about (the label horizon)
 
 
 class ModelProvider(Protocol):
@@ -54,7 +56,11 @@ class ModelProvider(Protocol):
     def live_version(self, name: str) -> str | None: ...
 
     def predict(
-        self, name: str, version: str | None, features: dict[str, float]
+        self,
+        name: str,
+        version: str | None,
+        features: dict[str, float],
+        symbol: str | None = None,
     ) -> ModelPrediction | None: ...
 
 
@@ -77,6 +83,7 @@ class SignalAgent(Agent):
         self.lots = LotSizes.of(lot_size_for)
         self.lots.require(strategy.symbols)  # a derivative with no known lot stops here
         self._pending: dict[str, str] = {}  # symbol -> intent id awaiting an outcome
+        self._bars_held: dict[str, int] = {}  # symbol -> bars seen since the position opened
         self._model_version: str | None = None
         self.signals_emitted = 0
         self.intents_emitted = 0
@@ -109,6 +116,8 @@ class SignalAgent(Agent):
     async def _on_features(self, _topic: str, fv: FeatureVector) -> None:  # type: ignore[override]
         if not self.strategy.enabled or fv.interval is not self.strategy.interval:
             return
+        held = self.portfolio.net_qty(fv.symbol, self.strategy.product)
+        self._bars_held[fv.symbol] = self._bars_held.get(fv.symbol, 0) + 1 if held else 0
         if not fv.warm and self.strategy.needs_features:
             self.skipped_cold += 1
             return
@@ -126,7 +135,12 @@ class SignalAgent(Agent):
             prob=prediction.prob if prediction else None,
             expected_edge_bps=prediction.expected_edge_bps if prediction else None,
             model_version=prediction.version if prediction else None,
-            meta={"reason": reason, "interval": fv.interval.value},
+            meta={
+                "reason": reason,
+                "interval": fv.interval.value,
+                "model": self.strategy.model.name,
+                "payoff_ratio": prediction.payoff_ratio if prediction else None,
+            },
         )
         await self.publish(Topics.SIGNALS, signal)
         self.signals_emitted += 1
@@ -175,6 +189,10 @@ class SignalAgent(Agent):
             flipped = (held > 0 and prediction.score < 0) or (held < 0 and prediction.score > 0)
             if flipped and abs(prediction.score) >= s.model.min_abs_score:
                 return exit_side, abs(held), prediction, "model:flip"
+        # a prediction is a view on the next `horizon` bars; hold it that long, no longer
+        limit = s.execution.max_holding_bars or (prediction.horizon if prediction else None)
+        if limit and self._bars_held.get(fv.symbol, 0) >= limit:
+            return exit_side, abs(held), prediction, f"time:{limit}"
         return None
 
     def _fires(self, rule, fv: FeatureVector) -> bool:  # type: ignore[no-untyped-def]
@@ -210,7 +228,7 @@ class SignalAgent(Agent):
             self._model_version = version
         if version is None:
             return None
-        return self.models.predict(name, version, fv.values)
+        return self.models.predict(name, version, fv.values, symbol=fv.symbol)
 
     # ------------------------------------------------------------------ sizing
     def size(self, fv: FeatureVector, side: Side, prediction: ModelPrediction | None) -> int:
@@ -254,7 +272,7 @@ class SignalAgent(Agent):
             ttl_seconds=s.execution.ttl_seconds,
             expected_edge_bps=float(edge),
             prob=signal.prob,
-            payoff_ratio=s.payoff_ratio,
+            payoff_ratio=signal.meta.get("payoff_ratio") or s.payoff_ratio,
             model_version=signal.model_version,
             signal_id=signal.id,
             meta={

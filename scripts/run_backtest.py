@@ -31,6 +31,7 @@ from trading.core.clock import MarketCalendar
 from trading.core.config import get_settings
 from trading.strategies.schema import load_strategies
 from trading.training.ingest import Archive
+from trading.training.registry import ModelRegistry
 
 log = logging.getLogger("run_backtest")
 
@@ -53,6 +54,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     ap.add_argument("--raw", action="store_true", help="skip corporate-action adjustment")
     ap.add_argument("--name", default="")
     ap.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
+    ap.add_argument("--models", type=Path, help="model registry (default MODELS_DIR)")
     ap.add_argument("--list", action="store_true", help="list saved runs and exit")
     ap.add_argument("-v", "--verbose", action="store_true")
     return ap.parse_args(argv)
@@ -133,7 +135,10 @@ async def main(argv: list[str] | None = None) -> int:
         name=args.name,
     )
     archive = Archive(settings.archive_dir, corporate_actions=settings.corporate_actions_file)
-    result = await run_backtest(cfg, calendar, archive=archive, output=args.output)
+    models = None
+    if any(s.model.enabled for s in strategies):
+        models = ModelRegistry(args.models or settings.models_dir, expected_spec=cfg.spec)
+    result = await run_backtest(cfg, calendar, archive=archive, models=models, output=args.output)
     print(result.summary_text())
     for sid, stats in result.per_strategy.items():
         print(f"  {sid:24} trades {stats['trades']:>4}  net {stats['net_pnl']:>12,.2f}")

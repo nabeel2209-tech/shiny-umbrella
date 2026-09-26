@@ -36,8 +36,11 @@ from trading.core.bus import make_bus
 from trading.core.clock import MarketCalendar, SimClock, SystemClock
 from trading.core.config import get_settings
 from trading.core.types import IST
+from trading.features.features import DEFAULT_SPEC
 from trading.strategies.schema import load_strategies
 from trading.training.ingest import Archive
+from trading.training.registry import ModelRegistry
+from trading.training.signal_log import SignalLog
 
 log = logging.getLogger("run_paper")
 
@@ -154,6 +157,8 @@ async def main(argv: list[str] | None = None) -> int:
             starting_equity=cash,
         ),
         instruments=instruments,
+        models=ModelRegistry(settings.models_dir, expected_spec=DEFAULT_SPEC),
+        signal_log=SignalLog(settings.db_url),
         clock=clock,
         live=False,
     )

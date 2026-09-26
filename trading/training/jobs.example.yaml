@@ -1,0 +1,34 @@
+# Nightly retraining jobs (scripts/train.py --nightly --jobs <this file>).
+# Copy to jobs.yaml and edit. Every derivative symbol must be in the instrument
+# master (it is downloaded automatically); equities default to single shares.
+ingest: true
+minutes_after_close: 15   # after the MCX close, the last market to shut
+drift_weekday: 4          # Friday: write the weekly drift report
+report_dir: data/reports
+
+jobs:
+  - name: nifty_leaders_5m
+    symbols: [NSE:RELIANCE, NSE:HDFCBANK, NSE:ICICIBANK, NSE:INFY, NSE:TCS]
+    interval: 5m
+    lookback_days: 120
+    holdout_days: 10
+    label:
+      kind: forward_return    # or triple_barrier
+      horizon: 6              # bars: 30 minutes
+      product: MIS            # labels never span the overnight gap
+      notional: 250000        # trade size used to price costs
+      slippage_bps: 2.0
+    train:
+      kind: ridge             # or lightgbm
+      n_folds: 5
+      embargo: 3
+      min_train: 1000
+      recency_half_life_days: 60
+    evaluation:
+      kelly_cap: 0.05
+      min_edge_multiple: 1.5
+    gate:
+      min_sharpe_improvement: 0.0
+      max_drawdown_pct: 0.10
+      max_feature_importance: 0.5
+      min_trades: 50

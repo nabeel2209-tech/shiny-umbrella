@@ -45,7 +45,7 @@ Requires Python 3.12 and [uv](https://github.com/astral-sh/uv). Secrets live onl
 | 2 | Dhan adapter, symbol map, archive ingest | done |
 | 3 | Trading engine (data / signal / risk / execution / monitor agents) | done |
 | 4 | Backtester | done |
-| 5 | Training pipeline, registry, promotion gate, nightly schedule | |
+| 5 | Training pipeline, registry, promotion gate, nightly schedule | done |
 | 6 | FastAPI + dashboard | |
 | 7 | Hardening: docker compose, logging, alerts, runbook | |
 
@@ -233,3 +233,57 @@ delivery charges and slippage when it is not.
   day; it no longer latches the kill switch or blocks exits. A manual KILL still
   stops everything until RESUME.
 - The order rate limiter is wall-clock, so backtests switch it off.
+
+## Phase 5 — what exists
+
+Models are trained offline, validated walk-forward, versioned, and promoted through
+a gate — never updated inside the live loop (constraint 2).
+
+| Module | Purpose |
+|--------|---------|
+| `trading/training/labels.py` | Forward-return and triple-barrier labels, **net of costs** (constraint 8): `sign(g) * max(|g| - cost, 0)` with the round trip from `costs.py`. Intraday labels never span the overnight gap. Average-uniqueness weights for overlapping labels. |
+| `trading/training/splits.py` | Walk-forward folds on unique timestamps (several symbols never split by row), a purge of at least the label horizon (refused otherwise, constraint 7), an optional embargo, and a holdout split. Nothing is shuffled. |
+| `trading/training/dataset.py` | Features from `features.py` (constraint 1) + labels, for one or many symbols; builds 5m/15m from archived 1m bars with the live bar builder. |
+| `trading/training/train.py` | Ridge or LightGBM; hyperparameters chosen only by mean validation IC across folds; weights = uniqueness x recency; out-of-fold predictions kept for a logistic calibration of P(right direction) and the payoff ratio; feature importances. |
+| `trading/training/evaluate.py` | The risk agent's position rule on predictions — direction from the sign, Kelly-capped size, nothing below the cost hurdle — with overlapping holdings; Sharpe, PnL, drawdown and turnover from the backtester's `metrics.py`. |
+| `trading/training/registry.py` | Write-once versions (`data/models/<name>/v0001/`), a single `live.json` pointer with a rollback stack, history and gate decisions. Also the signal agent's model provider: a promotion reaches a running engine on its next bar. |
+| `trading/training/promote.py` | The gate: better holdout Sharpe than the live model on the same window, drawdown within limit, no feature over 50% of importance, a minimum trade count. Optional: require positive walk-forward Sharpe too. |
+| `trading/training/signal_log.py` | Every engine signal to SQLite; the nightly job fills in the realised outcome. |
+| `trading/training/schedule.py` | Nightly after the MCX close: ingest top-up, attach outcomes, retrain, register, gate. Weekly drift report: live predictions vs holdout promises, paper/live fills vs a backtest of the same week. |
+| `scripts/train.py` | `fit`, `list`, `promote` (manual, bypasses the gate, asks first), `rollback`, `nightly --jobs FILE [--once]`. |
+
+```bash
+.venv/bin/python scripts/train.py fit --name reliance_5m --symbols NSE:RELIANCE \
+    --interval 5m --as-of 2026-09-25 --horizon 6 --promote
+.venv/bin/python scripts/train.py list
+.venv/bin/python scripts/train.py rollback reliance_5m --reason "bad week"
+cp trading/training/jobs.example.yaml trading/training/jobs.yaml   # then edit
+.venv/bin/python scripts/train.py nightly --jobs trading/training/jobs.yaml
+```
+
+A model-driven strategy names its model (`model: {name: reliance_5m}`) and trades
+whatever version is live; `run_backtest.py` and `run_paper.py` pick up the registry
+(`MODELS_DIR`). A backtest over a window the live model was trained on prints an
+in-sample warning.
+
+Acceptance tests: a planted mean-reversion signal is recovered by both model kinds
+(IC > 0.2 out of sample, the planted feature ranked first, the right sign) while a
+random walk yields none (`test_train.py`); the gate refuses a worse model and leaves
+the live pointer alone (`test_promote.py`); a running signal agent switches to a
+newly promoted version, and back on rollback, without a restart (`test_registry.py`).
+
+### Design decisions
+
+- **Deployed = evaluated.** A candidate is trained on data ending before its
+  holdout and deployed exactly as evaluated — no refit on the holdout. The live
+  model was trained the same way, so it has not seen today's holdout either and the
+  comparison is out of sample for both. Cost: the newest `holdout_days` are not in
+  the deployed model.
+- **Net predictions, gross hurdle.** Labels are net of costs, so a prediction is a
+  net edge; the risk agent's rule wants a gross one. `gross = |prediction| + cost`,
+  converted in one place, so costs are not charged twice.
+- **A model is traded over its horizon.** Predictions carry the label horizon and a
+  model-driven position exits after that many bars (or `max_holding_bars`).
+- Lot sizes: equities default to one share; a derivative with no known lot is an
+  error everywhere (engine, backtest, training), and the instrument master is
+  downloaded on startup when missing.
