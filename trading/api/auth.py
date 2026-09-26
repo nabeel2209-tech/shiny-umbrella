@@ -187,6 +187,20 @@ class AuthStore:
         log.info("creating the first dashboard user %r", username)
         return self.create_user(username, password, Role.ADMIN)
 
+    def set_password(self, username: str, password: str) -> None:
+        """Replace a user's password and end every session they have open."""
+        if len(password) < 8:
+            raise ValueError("password must be at least 8 characters")
+        with self._session() as s, s.begin():
+            row = s.scalar(select(UserRow).where(UserRow.username == username))
+            if row is None:
+                raise KeyError(username)
+            row.password_hash = hash_password(password)
+            for session in s.scalars(select(SessionRow).where(SessionRow.user_id == row.id)):
+                session.revoked = True
+        self._failures.pop(username, None)
+        log.warning("password changed for %r; their sessions were ended", username)
+
     def get_by_username(self, username: str) -> User | None:
         with self._session() as s:
             row = s.scalar(select(UserRow).where(UserRow.username == username))

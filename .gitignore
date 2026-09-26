@@ -18,6 +18,8 @@ htmlcov/
 data/archive/
 data/*.db
 data/*.db-journal
+data/*.db-wal
+data/*.db-shm
 data/models/
 data/logs/
 data/backtests/

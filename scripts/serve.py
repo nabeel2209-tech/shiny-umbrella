@@ -76,6 +76,12 @@ def main(argv: list[str] | None = None) -> int:
         password = secrets.token_urlsafe(12)
         admin = (username, password)
         print(f"\n  dev login: {username} / {password}  (shown once)\n", flush=True)
+    elif services.auth.get_by_username(username) is not None:
+        log.info(
+            "signing in as %r with the password it was created with; forgotten it? "
+            "python -m scripts.set_password",
+            username,
+        )
 
     if host not in ("127.0.0.1", "localhost", "::1") and not settings.cookie_secure:
         log.warning(

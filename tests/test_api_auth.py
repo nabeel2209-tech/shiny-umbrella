@@ -156,3 +156,42 @@ def test_csrf_token_is_bound_to_the_session(api):
     assert first != second["csrf_token"]
     r = api.client.post("/api/control/kill", json={}, headers={"X-CSRF-Token": first})
     assert r.status_code == 403
+
+
+# --------------------------------------------------------------------------- password reset
+
+
+def test_set_password_replaces_it_and_ends_sessions(tmp_path):
+    store = AuthStore(f"sqlite:///{tmp_path / 'a.db'}", "s" * 32)
+    store.ensure_admin("admin", "forgotten password")
+    _, token = store.login("admin", "forgotten password")
+    with pytest.raises(ValueError):
+        store.set_password("admin", "short")
+    with pytest.raises(KeyError):
+        store.set_password("nobody", "long enough password")
+    store.set_password("admin", "brand new password")
+    with pytest.raises(AuthError):
+        store.authenticate(token)  # signed out everywhere
+    with pytest.raises(AuthError):
+        store.login("admin", "forgotten password")
+    store.login("admin", "brand new password")
+
+
+def test_set_password_script(tmp_path, monkeypatch):
+    from scripts import set_password
+    from trading.core import config
+
+    monkeypatch.setenv("DB_URL", f"sqlite:///{tmp_path / 'a.db'}")
+    config.get_settings.cache_clear()
+    try:
+        answers = iter(["first password!", "first password!"])
+        assert set_password.main([], ask=lambda _: next(answers)) == 0  # empty db: creates admin
+        answers = iter(["new password!!", "typo password!"])
+        assert set_password.main([], ask=lambda _: next(answers)) == 1  # mismatch: no change
+        answers = iter(["new password!!", "new password!!"])
+        assert set_password.main([], ask=lambda _: next(answers)) == 0
+        assert set_password.main(["--user", "ghost"], ask=lambda _: "x") == 1
+        store = AuthStore(f"sqlite:///{tmp_path / 'a.db'}", "s" * 32)
+        assert store.login("admin", "new password!!")[0].is_admin
+    finally:
+        config.get_settings.cache_clear()

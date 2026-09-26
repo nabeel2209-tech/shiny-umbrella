@@ -32,7 +32,8 @@ Dashboard & API ──► Training pipeline ──► Model registry ──► S
 ```bash
 make setup          # uv venv + deps + copies .env.example to .env
 make check          # ruff + pytest
-make serve          # dashboard on http://127.0.0.1:8000 (set DASHBOARD_PASSWORD first)
+python -m scripts.set_password   # create or reset the dashboard admin's password
+make serve          # dashboard on http://127.0.0.1:8000
 ```
 
 Requires Python 3.12 and [uv](https://github.com/astral-sh/uv). Secrets live only in
